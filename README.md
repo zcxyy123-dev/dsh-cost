@@ -42,11 +42,13 @@
 
 | 主面板 | 聊天区标注 |
 |---|---|
-| ![panel](docs/screenshots/screenshot-panel.png) | ![annotate](docs/screenshots/screenshot-annotate.png) |
+| [![panel](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-panel.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-panel.png) | [![annotate](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-annotate.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-annotate.png) |
 
 | 文件视图 | 主题跟随（暗） | 主题跟随（亮） | 一键导入 |
 |---|---|---|---|
-| ![files](docs/screenshots/screenshot-files.png) | ![dark](docs/screenshots/screenshot-theme-dark.png) | ![light](docs/screenshots/screenshot-theme-light.png) | ![auto](docs/screenshots/screenshot-auto-import.png) |
+| [![files](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-files.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-files.png) | [![dark](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-theme-dark.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-theme-dark.png) | [![light](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-theme-light.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-theme-light.png) | [![auto](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-auto-import.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-auto-import.png) |
+
+> 截图经 jsDelivr CDN 加载（点击可查看 GitHub 原图）；本地克隆后相对路径同样有效。
 
 ---
 
