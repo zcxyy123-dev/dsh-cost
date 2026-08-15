@@ -15,3 +15,8 @@ desktop.ini
 # 本地环境（勿上传）
 .env
 .env.local
+
+# Local Codex mail history and generated capture artifacts
+/mail-outbox/
+/tmp/
+/screenshot-*.png
