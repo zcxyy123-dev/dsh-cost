@@ -63,15 +63,24 @@ function extractApiKey(text) {
   return match ? match[0] : null
 }
 
-/** 读取并解析候选文件，返回 { path, key }。 */
+/** 按凭证名取 Key（env/yaml 的 KEY: value 形态），找不到返回 null。 */
+function extractNamedKey(text, name) {
+  const re = new RegExp(`(?:^|[\\r\\n])${name}\\s*[:=]\\s*["']?([A-Za-z0-9_.-]{8,})["']?`, 'm')
+  const match = String(text || '').match(re)
+  return match ? match[1] : null
+}
+
+/** 读取并解析候选文件，返回 { path, key, opencodeGoKey }。 */
 function findApiKey(explicitPath) {
   const files = explicitPath ? [explicitPath] : candidatePaths()
   for (const file of files) {
     try {
       if (!fs.existsSync(file)) continue
       const text = fs.readFileSync(file, 'utf8')
-      const key = extractApiKey(text)
-      if (key) return { path: file, key }
+      const key = extractNamedKey(text, 'DEEPSEEK_API_KEY') || extractApiKey(text)
+      const opencodeGoKey = extractNamedKey(text, 'OPENCODE_GO_API_KEY')
+        || extractNamedKey(text, 'OPENCODE_API_KEY')
+      if (key || opencodeGoKey) return { path: file, key, opencodeGoKey }
     } catch { /* 跳过不可读文件 */ }
   }
   return null
@@ -121,7 +130,11 @@ function handleRequest(req, res, found) {
   }
 
   if (url.pathname === '/credentials' && found) {
-    json(200, { apiKey: found.key, source: found.path })
+    json(200, {
+      apiKey: found.key || null,
+      opencodeGoApiKey: found.opencodeGoKey || null,
+      source: found.path,
+    })
     return
   }
   if (url.pathname === '/shutdown') {
@@ -171,7 +184,10 @@ function main() {
     // 无凭证也继续启动（文件服务独立于凭证）
   }
   if (found) {
-    console.log(`[setup-key] 已从 ${found.path} 找到 API Key（${found.key.slice(0, 6)}…${found.key.slice(-4)}）`)
+    const mask = (s) => (s ? `${s.slice(0, 6)}…${s.slice(-4)}` : null)
+    console.log(`[setup-key] 已从 ${found.path} 找到凭证`
+      + `${found.key ? `\n  DeepSeek Key: ${mask(found.key)}` : ''}`
+      + `${found.opencodeGoKey ? `\n  OpenCode Go Key: ${mask(found.opencodeGoKey)}` : ''}`)
   } else {
     console.log('[setup-key] 未找到 API Key（仅启用文件服务：目录树 / 文件预览）')
   }

@@ -152,6 +152,20 @@ async function run() {
     assert.equal(r.status, 200, '平台用量路径应放行')
     assert.equal(fetchCalls.length, 3, '第三次转发（前两次：正常转发 + Basic 头丢弃转发）')
 
+    // OpenCode Go 额度路径（白名单新增）
+    r = await postJson(proxy, {
+      url: 'https://opencode.ai/zen/go/v1/usage',
+      headers: { Authorization: 'Bearer sk-opencode-x', Accept: 'application/json' },
+    })
+    assert.equal(r.status, 200, 'OpenCode Go 额度路径应放行')
+    assert.equal(fetchCalls.length, 4, '第四次转发')
+    assert.deepEqual(fetchCalls[3].init.headers, {
+      authorization: 'Bearer sk-opencode-x',
+      accept: 'application/json',
+    }, '只透传 authorization/accept')
+    r = await postJson(proxy, { url: 'https://opencode.ai/zen/go/v1/other', headers: {} })
+    assert.equal(r.status, 403, 'opencode.ai 白名单外路径必须拒绝')
+
     // 上游失败 → 502 语义
     globalThis.fetch = async () => { throw new Error('network down') }
     r = await postJson(proxy, {
@@ -177,14 +191,14 @@ async function run() {
     })
     r = await invoke(routes2.find((x) => x.path === '/dshu/api/apikey'), makeRequest('GET', { host: '127.0.0.1:3080' }))
     assert.equal(r.status, 200)
-    assert.deepEqual(r.json, { apiKey: 'sk-real', source: 'file' })
+    assert.deepEqual(r.json, { apiKey: 'sk-real', opencodeGoApiKey: 'sk-real', source: 'file' })
   }
 
   {
     const { routes: routes3 } = applyPlugin({})
     r = await invoke(routes3.find((x) => x.path === '/dshu/api/apikey'), makeRequest('GET', { host: '127.0.0.1:3080' }))
     assert.equal(r.status, 200)
-    assert.deepEqual(r.json, { apiKey: null, source: null }, '无凭证服务时降级为 null')
+    assert.deepEqual(r.json, { apiKey: null, opencodeGoApiKey: null, source: null }, '无凭证服务时降级为 null')
   }
 
   console.log('Host half (lib/host.js) smoke test passed.')

@@ -116,8 +116,10 @@ const plugin = JSON.parse(readCompleteFile('dsh-plugin/usage-display.plugin.json
 
 ## 6. 可选官方账户数据
 
-动态插件的 Host 半可读取 DSH 解析后的 `DEEPSEEK_API_KEY`，用于自动查询官方余额。Key
-会被 Client 保存到本机该站点的 `localStorage`。平台用量则要求用户自行填写 `userToken`。
+动态插件的 Host 半可读取 DSH 解析后的 `DEEPSEEK_API_KEY`（官方余额）与
+`OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`（OpenCode Go 三窗口额度：滚动5h/周/月
+的已用 % 与重置时间）。Key 会被 Client 保存到本机该站点的 `localStorage`。平台用量则
+要求用户自行填写 `userToken`。
 
 这不是部署所必需的功能。Agent 不得打印、记录、复制到报告或提交 API Key、userToken、
 Cookie 或原始官方响应。如果部署环境不允许浏览器本地保存 Key，应先让用户决定是否继续。

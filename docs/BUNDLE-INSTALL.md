@@ -66,11 +66,13 @@ dsh plugin --profile web remove dsh-cost-usage-display
 | 浏览器半已挂载 | DevTools → Network：`/plugins/dsh-cost-usage-display/client.js` 返回 200 |
 | 产物一致性 | 仓库内 `node verify-bundle.js` 输出 `Bundle verification passed.` |
 | 官方余额 | 面板「官方账户」应自动带出宿主凭证中的 API Key（`DEEPSEEK_API_KEY`）并查询余额 |
+| OpenCode Go 额度 | 面板「官方账户」应显示滚动5h/周/月三窗口额度（宿主凭证 `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`，或 ⚙ 手动粘贴 `sk-opencode-…` Key） |
 
 ## 安全设计（宿主半路由）
 
 - `/dshu/api/proxy` 只转发白名单内的官方 URL（api.deepseek.com / platform.deepseek.com
-  的固定路径），只透传 `authorization`（须 Bearer）与 `accept` 头，其余一律丢弃。
+  的固定路径 + opencode.ai/zen/go/v1/usage），只透传 `authorization`（须 Bearer）与
+  `accept` 头，其余一律丢弃。
 - 两个路由都要求回环 Host（防 DNS rebinding）、拒绝跨站 fetch 标记与不匹配的 Origin。
 - 凭证只回给同源页面，不落盘、不进日志；面板侧 Key 仅存本机 `localStorage`。
 
@@ -82,3 +84,4 @@ dsh plugin --profile web remove dsh-cost-usage-display
 | `/dshu/api/apikey` 404 | 宿主半未挂载：检查 `dsh.profile.bundles` 是否包含本包、DSH 是否重启 |
 | 与动态插件同时运行 | 二者会互相检测并跳过重复挂载；建议只保留一种安装方式 |
 | 官方余额显示加载失败 | 检查宿主网络能否直连 api.deepseek.com（代理/防火墙） |
+| OpenCode Go 额度显示失败 | 检查 Key 是否 `sk-opencode-` 开头、宿主网络能否直连 opencode.ai；接口未公开文档，若返回结构变化请把 Network 响应发维护者 |

@@ -68,7 +68,10 @@ dsh plugin --profile web add github:zcxyy123-dev/dsh-cost
 - `用量 / 文件` 双视图，支持当前工作区文件树和受限文本预览。
 - 已完成聊天回合底部的输入、输出和费用标注。
 - 跟随 DSH 亮暗主题；切换会话时显示加载遮罩并刷新数据。
-- 可选读取 DeepSeek 官方余额和平台用量。
+- 可选读取 DeepSeek 官方余额和平台用量；**OpenCode Go（opencode-go 提供方）
+  三窗口额度**：滚动5h / 周 / 月 的已用百分比、剩余与重置倒计时
+  （`GET https://opencode.ai/zen/go/v1/usage`，Bearer Key；Key 自动取自宿主凭证
+  `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` 或 ⚙ 手动粘贴 `sk-opencode-…`）。
 
 ## 其他安装形态
 
@@ -118,8 +121,9 @@ node test-official.js
 `timer` 服务工作，不使用页面全局网络或定时器来绕开运行器限制。
 
 官方余额功能会尝试解析 DSH 已配置的 `DEEPSEEK_API_KEY`，并将可用 Key 存入本机该站点
-的浏览器 `localStorage`。平台用量需要用户手动填入 `userToken`。不要将任一凭证写入
-Issue、聊天记录、日志或提交。
+的浏览器 `localStorage`；OpenCode Go 额度会用 `OPENCODE_GO_API_KEY` /
+`OPENCODE_API_KEY`（或手动粘贴的 `sk-opencode-…` Key）。平台用量需要用户手动填入
+`userToken`。不要将任一凭证写入 Issue、聊天记录、日志或提交。
 
 ## 目录
 

@@ -60,6 +60,13 @@ const CONFIG = {
   refreshMs: 5000,
   // 官方账户数据（余额/平台费用）刷新间隔（毫秒）。官方接口有频率限制，勿设过小。
   officialRefreshMs: 60000,
+  // OpenCode Go 官方额度查询（GET https://opencode.ai/zen/go/v1/usage，Bearer API Key）。
+  // 官方按三个独立窗口计额度：滚动 5h / 周 / 月，各自有重置时间。
+  // limits 仅作展示参考（$12/5h、$30/周、$60/月）——响应本身不含额度，套餐也可能变动。
+  opencode: {
+    usageUrl: 'https://opencode.ai/zen/go/v1/usage',
+    limits: [12, 30, 60], // 与三个窗口顺序对应：滚动5h / 周 / 月
+  },
   // 在聊天区每条已完成回合（turn）底部、复制按钮旁标注该回合的
   // 输入（发送）/ 输出（返回）token 量与费用。数据来自 session.history 的 usage。
   annotateMessages: true,
@@ -118,14 +125,31 @@ function fmtMoney(amount) {
   return `${sym}${v.toFixed(6)}`
 }
 
-/* ===================== 官方账户（DeepSeek 官方 API 直连） =====================
- * 两类官方数据源：
- *   1. 余额：GET https://api.deepseek.com/user/balance（公开接口，浏览器 CORS 放行，
- *      用 API Key 鉴权；Key 仅存本机 localStorage，请求只发往官方域名）
- *   2. 平台用量/费用：GET https://platform.deepseek.com/api/v0/usage/{amount,cost}
- *      （平台私有 dashboard 接口，需登录 platform.deepseek.com 后从浏览器
- *      localStorage 复制 userToken；页面直连被 CORS 拦截，由扩展后台
- *      / 油猴 GM_xhr 桥转发——见 __dshuBridgeFetch）
+/** 重置倒计时：距 resetAt 的剩余时长（"3小时20分"/"23分"/"即将重置"）。 */
+function fmtCountdown(resetAt) {
+  if (!resetAt) return ''
+  const ms = resetAt - Date.now()
+  if (ms <= 0) return '即将重置'
+  const total = Math.round(ms / 1000)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  if (h > 0) return `${h}小时${String(m).padStart(2, '0')}分`
+  if (m > 0) return `${m}分`
+  return `${total}秒`
+}
+
+/* ===================== 官方账户（DeepSeek / OpenCode Go 官方 API 直连） =====================
+ * 提供方（⚙ 设置可选，默认按 Key 前缀自动识别，sk-opencode- → OpenCode Go）：
+ *   DeepSeek 官方：
+ *     1. 余额：GET https://api.deepseek.com/user/balance（公开接口，浏览器 CORS 放行，
+ *        用 API Key 鉴权；Key 仅存本机 localStorage，请求只发往官方域名）
+ *     2. 平台用量/费用：GET https://platform.deepseek.com/api/v0/usage/{amount,cost}
+ *        （平台私有 dashboard 接口，需登录 platform.deepseek.com 后从浏览器
+ *        localStorage 复制 userToken；页面直连被 CORS 拦截，由扩展后台
+ *        / 油猴 GM_xhr 桥转发——见 __dshuBridgeFetch）
+ *   OpenCode Go（opencode-go，DSH pi-ai 内置提供方）：
+ *     GET https://opencode.ai/zen/go/v1/usage（Bearer API Key，未公开文档实测有效），
+ *     返回滚动5h/周/月三窗口的已用百分比与重置时间（官方无余额字段）。
  * 聚合语义照 CodexBar（开源）的 DeepSeekUsageCostParser：amount 为 token 整数，
  * cost 为金额浮点；type ∈ {PROMPT_CACHE_HIT_TOKEN, PROMPT_CACHE_MISS_TOKEN,
  * RESPONSE_TOKEN, REQUEST}；错误码 40002/40003 表示 Token 失效。
@@ -137,6 +161,14 @@ const OFFICIAL = {
 }
 const STORAGE_KEY = 'dshu.apiKey'
 const STORAGE_TOKEN = 'dshu.platformToken'
+// OpenCode Go（opencode-go 提供方，pi-ai 目录：模型 baseURL https://opencode.ai/zen/go/v1，
+// 凭证 env 名为 OPENCODE_GO_API_KEY 或 OPENCODE_API_KEY）。Key 仅存本机 localStorage，
+// 请求只发往 opencode.ai。
+const STORAGE_OPENCODE_KEY = 'dshu.opencodeKey'
+const STORAGE_PROVIDER = 'dshu.provider' // 'auto' | 'deepseek' | 'opencode-go'
+const OPENCODE = {
+  USAGE_URL: 'https://opencode.ai/zen/go/v1/usage',
+}
 // 凭证通道：优先宿主内建桥（/dshu/credentials，同源，直读 DSH 宿主凭证）；
 // 回退本地桥（setup-key.js / setup-key.bat，3987 端口）。
 const LOCAL_CREDENTIAL_URL = 'http://127.0.0.1:3987/credentials'
@@ -154,21 +186,43 @@ function hasDynamicHost() {
 }
 
 /**
- * 自动获取 API Key：优先宿主凭证（/dshu/credentials，直读 DSH 宿主
- * DEEPSEEK_API_KEY），无宿主桥时回退本地桥。找到后存入 localStorage。
- * 无可用通道时静默跳过，每 30 秒重试一次。
+ * 自动获取 API Key：优先宿主凭证（动态宿主 apikey RPC / /dshu/credentials 桥，
+ * 直读 DSH 宿主 DEEPSEEK_API_KEY + OPENCODE_GO_API_KEY），无宿主桥时回退本地桥。
+ * DeepSeek Key 与 OpenCode Go Key 各存各的 localStorage（dshu.apiKey / dshu.opencodeKey）。
+ * 无可用通道时静默跳过，每 30 秒重试一次。返回是否导入了新凭证。
  */
 async function autoImportApiKey() {
   const now = Date.now()
-  if (getApiKey()) return false
+  const already = !!(getApiKey() && getOpencodeKey())
+  if (already) return false
   if (now - lastAutoProbeAt < 30000) return false
   lastAutoProbeAt = now
+
+  // 从桥响应提取两类凭证（缺谁补谁），返回是否新增。
+  const absorb = (json) => {
+    let changed = false
+    if (json && typeof json === 'object') {
+      if (!getApiKey() && typeof json.apiKey === 'string' && json.apiKey) {
+        setStoredCredential(STORAGE_KEY, json.apiKey.trim())
+        changed = true
+      }
+      if (!getOpencodeKey()) {
+        const ok = json.opencodeGoApiKey || json.opencodeApiKey
+        if (typeof ok === 'string' && ok) {
+          setStoredCredential(STORAGE_OPENCODE_KEY, ok.trim())
+          changed = true
+        }
+      }
+    }
+    return changed
+  }
+
+  // 0) 动态宿主（bundle / Cordis 插件）：host.call('apikey') 一次拿两类凭证
   if (hasDynamicHost()) {
     try {
       const credential = await __dshuHost.call('apikey', {})
-      if (credential && typeof credential.apiKey === 'string' && credential.apiKey) {
-        setStoredCredential(STORAGE_KEY, credential.apiKey.trim())
-        log('auto-imported api key from dynamic host')
+      if (absorb(credential)) {
+        log('auto-imported credentials from dynamic host')
         return true
       }
     } catch { /* credential access is optional */ }
@@ -180,13 +234,9 @@ async function autoImportApiKey() {
       const timer = setTimeout(() => controller.abort(), 2500)
       const response = await fetch(`${HOST_BRIDGE}/credentials`, { signal: controller.signal, cache: 'no-store' })
       clearTimeout(timer)
-      if (response.ok) {
-        const json = parseJsonSafe(await response.text())
-        if (json && typeof json.apiKey === 'string' && json.apiKey) {
-          setStoredCredential(STORAGE_KEY, json.apiKey.trim())
-          log('auto-imported api key from host bridge')
-          return true
-        }
+      if (response.ok && absorb(parseJsonSafe(await response.text()))) {
+        log('auto-imported credentials from host bridge')
+        return true
       }
     }
   } catch { /* 回退本地桥 */ }
@@ -198,10 +248,11 @@ async function autoImportApiKey() {
     clearTimeout(timer)
     if (!response.ok) return false
     const json = parseJsonSafe(await response.text())
-    if (!json || typeof json.apiKey !== 'string' || !json.apiKey) return false
-    setStoredCredential(STORAGE_KEY, json.apiKey.trim())
-    log('auto-imported api key from local bridge')
-    return true
+    if (absorb(json)) {
+      log('auto-imported credentials from local bridge')
+      return true
+    }
+    return false
   } catch {
     return false // 桥未启动等静默场景
   }
@@ -218,6 +269,28 @@ function setStoredCredential(name, value) {
 }
 function getApiKey() { return getStoredCredential(STORAGE_KEY) }
 function getPlatformToken() { return getStoredCredential(STORAGE_TOKEN) }
+function getOpencodeKey() { return getStoredCredential(STORAGE_OPENCODE_KEY) }
+
+/**
+ * OpenCode Go Key 判据：官方下发的 OpenCode 系 Key 以 sk-opencode- 开头
+ * （与 DeepSeek 的 sk- 前缀区分；两系 Key 分别存 dshu.apiKey / dshu.opencodeKey）。
+ */
+function isOpencodeKey(key) {
+  return typeof key === 'string' && /^sk-opencode-/i.test(key.trim())
+}
+
+/**
+ * 当前官方账户提供方：'deepseek' | 'opencode-go'。
+ * 设置（dshu.provider）可显式指定；'auto' 时按已存 Key 的形态判定——
+ * 用户把 OpenCode Go Key 贴进任一 Key 输入框都能被识别。
+ */
+function resolveProvider() {
+  const mode = (getStoredCredential(STORAGE_PROVIDER) || 'auto').trim()
+  if (mode === 'opencode-go') return 'opencode-go'
+  if (mode === 'deepseek') return 'deepseek'
+  if (isOpencodeKey(getOpencodeKey()) || isOpencodeKey(getApiKey())) return 'opencode-go'
+  return 'deepseek'
+}
 
 /**
  * 官方请求统一传输层：
@@ -265,6 +338,117 @@ async function fetchOfficialBalance() {
     total: Number(primary.total_balance) || 0,
     granted: Number(primary.granted_balance) || 0,
     toppedUp: Number(primary.topped_up_balance) || 0,
+  }
+}
+
+/* ===================== OpenCode Go 官方额度（opencode.ai 直连） =====================
+ * opencode-go 是 DSH（pi-ai 目录）内置提供方：模型 baseURL https://opencode.ai/zen/go/v1，
+ * 凭证 env OPENCODE_GO_API_KEY / OPENCODE_API_KEY，Key 前缀 sk-opencode-。
+ * 官方额度接口（未公开文档，2026-08 实测存在）：
+ *   GET https://opencode.ai/zen/go/v1/usage
+ *   Authorization: Bearer <apiKey>
+ * 响应示例：
+ *   { "usage": {
+ *       "rolling": { "status": "ok", "percent": 9,  "resetsAt": "…ISO…" },
+ *       "weekly":  { "status": "ok", "percent": 12, "resetsAt": "…" },
+ *       "monthly": { "status": "ok", "percent": 6,  "resetsAt": "…" } } }
+ * percent 为 0–100 的已用百分比；无余额字段，官方只给窗口用量与重置时间。
+ * 解析做了防御：兼容 percent 为小数(0–1)、used/limit 按比例、5h/week/month 别名键、
+ * reset 为 ISO 或 Unix 秒/毫秒。
+ * 传输：bundle/扩展/油猴走 __dshuBridgeFetch（宿主 /dshu/api/proxy 白名单代理），
+ * 动态插件走 __dshuHost.call('opencode')（宿主 curl，宿主侧解析后返回 windows）。
+ */
+
+/** 规范化一个额度窗口条目。 */
+function normalizeOpencodeWindow(key, label, raw, limit) {
+  const obj = raw && typeof raw === 'object' ? raw : {}
+  let percent = Number(obj.percent ?? obj.used_percent ?? obj.usedPercent)
+  if (!Number.isFinite(percent)) {
+    // 无 percent 时用 used/limit 按比例兜底
+    const used = Number(obj.used ?? obj.used_amount ?? obj.amount)
+    const lim = Number(obj.limit ?? obj.limit_amount)
+    percent = Number.isFinite(used) && Number.isFinite(lim) && lim > 0 ? (used / lim) * 100 : 0
+  }
+  if (Math.abs(percent) <= 1) percent *= 100 // 小数（0–1）→ 百分比
+  percent = Math.max(0, Math.min(100, percent || 0))
+
+  let resetAt = null
+  const rawReset = obj.resetsAt ?? obj.reset_at ?? obj.resetAt ?? obj.reset
+  if (typeof rawReset === 'string' && rawReset) {
+    const t = Date.parse(rawReset)
+    if (Number.isFinite(t)) resetAt = t
+  } else if (typeof rawReset === 'number' && rawReset > 0) {
+    resetAt = rawReset < 1e12 ? rawReset * 1000 : rawReset // Unix 秒 → 毫秒
+  } else if (Number(obj.reset_in_sec ?? obj.resetInSec) > 0) {
+    resetAt = Date.now() + Number(obj.reset_in_sec ?? obj.resetInSec) * 1000
+  }
+  return {
+    key,
+    label,
+    percent,
+    remaining: Math.max(0, 100 - percent),
+    limit: Number.isFinite(limit) ? limit : undefined,
+    status: typeof obj.status === 'string' && obj.status ? obj.status : 'ok',
+    resetAt,
+  }
+}
+
+/** 解析 /zen/go/v1/usage 响应 → 窗口数组（按 滚动5h/周/月 顺序）。 */
+function parseOpencodeUsage(json) {
+  const root = json && typeof json === 'object' ? json : {}
+  const usage = root.usage && typeof root.usage === 'object' ? root.usage
+    : root.data && typeof root.data === 'object' ? root.data
+    : root
+  const pick = (keys) => {
+    for (const k of keys) {
+      const v = usage[k]
+      if (v && typeof v === 'object') return v
+    }
+    return null
+  }
+  const winDefs = [
+    ['rolling', ['rolling', 'window_5h', '5h', 'hourly'], '滚动 5h'],
+    ['weekly', ['weekly', 'window_weekly', 'week'], '周额度'],
+    ['monthly', ['monthly', 'window_monthly', 'month'], '月额度'],
+  ]
+  const limits = (CONFIG.opencode && CONFIG.opencode.limits) || [12, 30, 60]
+  return winDefs
+    .map(([key, keys, label], i) => {
+      const raw = pick(keys)
+      return raw ? normalizeOpencodeWindow(key, label, raw, limits[i]) : null
+    })
+    .filter(Boolean)
+}
+
+/** OpenCode Go 官方额度：API Key → https://opencode.ai/zen/go/v1/usage。 */
+async function fetchOpencodeGoUsage() {
+  const key = getOpencodeKey() || (isOpencodeKey(getApiKey()) ? getApiKey() : '')
+  if (!key) return null
+  // 动态插件：宿主 curl 直连并解析（无 CORS 问题），返回 { provider, windows } 或 { error }
+  if (hasDynamicHost()) {
+    try {
+      const result = await __dshuHost.call('opencode', { opencodeKey: key })
+      if (result && (Array.isArray(result.windows) || result.error)) return result
+      return { error: 'OpenCode Go 额度接口未返回窗口数据（格式可能已变）' }
+    } catch (e) {
+      return { error: e && e.message ? e.message : String(e) }
+    }
+  }
+  try {
+    const res = await officialFetch(OPENCODE.USAGE_URL, {
+      headers: { Accept: 'application/json', Authorization: `Bearer ${key}` },
+    })
+    if (res.status === 401) return { error: 'OpenCode Go API Key 无效或已失效' }
+    if (res.status === 403) return { error: 'OpenCode Go 拒绝该 Key（403：套餐/区域受限？）' }
+    if (!res.ok) return { error: `OpenCode Go 额度接口返回 HTTP ${res.status}` }
+    const json = parseJsonSafe(res.body)
+    const windows = json ? parseOpencodeUsage(json) : []
+    if (windows.length === 0) {
+      return { error: 'OpenCode Go 额度接口未返回窗口数据（格式可能已变，可手动查 dashboard）' }
+    }
+    return { provider: 'opencode-go', windows }
+  } catch (e) {
+    return { error: e && e.message ? e.message : String(e) }
   }
 }
 
@@ -745,11 +929,23 @@ function currencySymbol(code) {
   return code === 'USD' ? '$' : '¥'
 }
 
-/** 一次拉取全部官方数据（节流由调用方控制）。 */
+/** 一次拉取全部官方数据（节流由调用方控制）。按当前提供方分流。 */
 async function refreshOfficial() {
-  const out = { balance: null, usage: null }
-  try { out.balance = await fetchOfficialBalance() } catch (e) { log('balance failed', e) }
-  try { out.usage = await fetchOfficialPlatformUsage() } catch (e) { log('platform usage failed', e) }
+  const out = { balance: null, usage: null, opencode: null }
+  if (resolveProvider() === 'opencode-go') {
+    try { out.opencode = await fetchOpencodeGoUsage() } catch (e) { log('opencode usage failed', e) }
+    // DeepSeek Key 也配置了的话并排显示官方余额
+    if (getApiKey()) {
+      try { out.balance = await fetchOfficialBalance() } catch (e) { log('balance failed', e) }
+    }
+  } else {
+    try { out.balance = await fetchOfficialBalance() } catch (e) { log('balance failed', e) }
+    try { out.usage = await fetchOfficialPlatformUsage() } catch (e) { log('platform usage failed', e) }
+    // OpenCode Go Key 也配置了的话并排显示额度
+    if (getOpencodeKey()) {
+      try { out.opencode = await fetchOpencodeGoUsage() } catch (e) { log('opencode usage failed', e) }
+    }
+  }
   return out
 }
 
@@ -1360,23 +1556,60 @@ function renderError(container, message) {
 function renderOfficialSection(container, official) {
   const sec = el('div', 'dshu-sec dshu-official')
   const title = el('div', 'dshu-sec-title')
-  title.append(el('span', null, '官方账户'), el('span', 'dshu-sub', 'DeepSeek 直连'))
+  const provider = resolveProvider()
+  title.append(el('span', null, '官方账户'), el('span', 'dshu-sub', provider === 'opencode-go' ? 'OpenCode Go 直连' : 'DeepSeek 直连'))
   sec.append(title)
 
   const hasKey = !!getApiKey()
   const hasToken = !!getPlatformToken()
+  const hasOpencodeKey = !!getOpencodeKey()
 
-  if (!hasKey && !hasToken) {
+  if (!hasKey && !hasToken && !hasOpencodeKey) {
     const hint = el('div', 'dshu-row')
     hint.append(el('span', 'k', '未配置凭证 · 自动探测中…'), el('button', 'dshu-link', '⚙ 配置/手动'))
     hint.querySelector('.dshu-link').onclick = () => openSettings()
     const tip = el('div', 'dshu-field-hint')
-    tip.textContent = '自动导入宿主凭证（dshub-1 桥）或双击 setup-key.bat（也可点 ⚙ 手动粘贴）'
+    tip.textContent = '自动导入宿主凭证（动态宿主 apikey / dshub-1 桥）或双击 setup-key.bat；OpenCode Go 用户可点 ⚙ 粘贴 sk-opencode-… Key（也可手动选择提供方）'
     sec.append(hint, tip)
     container.append(sec)
     return
   }
 
+  // --- OpenCode Go 额度窗口（三窗口：滚动5h / 周 / 月，已用 % + 重置倒计时） ---
+  if (official && official.opencode && !official.opencode.error) {
+    const oc = official.opencode
+    const rows = el('div', 'dshu-rows')
+    rows.style.marginTop = '6px'
+    for (const w of oc.windows) {
+      const wrap = el('div', 'dshu-opencode-window')
+      const head = el('div', 'dshu-row')
+      const label = el('span', 'k')
+      const used = el('span', 'v')
+      used.append(`${fmtInt(w.remaining)}%`, el('span', 'unit', w.limit ? `额度 $${w.limit}` : ''))
+      const statusTail = w.status === 'ok' ? '' : ` · ${w.status}`
+      label.append(el('span', null, w.label), el('span', 'unit', `已用 ${w.percent.toFixed(1)}%${statusTail}`))
+      head.append(label, used)
+      const bar = el('div', 'dshu-bar')
+      const fill = el('i')
+      fill.style.width = `${Math.min(100, w.percent)}%`
+      if (w.percent >= 80) bar.classList.add('dshu-bar-danger')
+      else if (w.percent >= 60) bar.classList.add('dshu-bar-warn')
+      bar.append(fill)
+      wrap.append(head, bar)
+      const foot = el('div', 'dshu-ctx-foot')
+      const rt = fmtCountdown(w.resetAt)
+      foot.append(el('span', null, `剩余 ${(w.remaining).toFixed(1)}%${rt ? ` · 重置 ${rt}` : ''}`))
+      wrap.append(foot)
+      rows.append(wrap)
+    }
+    sec.append(rows)
+  } else if (official && official.opencode && official.opencode.error) {
+    const row = el('div', 'dshu-row')
+    row.append(el('span', 'k', 'OpenCode Go 额度'), el('span', 'v', official.opencode.error))
+    sec.append(row)
+  }
+
+  // --- DeepSeek 官方余额 ---
   if (official && official.balance && !official.balance.error) {
     const b = official.balance
     const sym = currencySymbol(b.currency)
@@ -1395,6 +1628,7 @@ function renderOfficialSection(container, official) {
     sec.append(row)
   }
 
+  // --- DeepSeek 平台费用/用量（需 userToken；页面直连被 CORS 拦，扩展/油猴自动走桥） ---
   if (official && official.usage && !official.usage.error) {
     const u = official.usage
     const sym = currencySymbol(u.currency)
@@ -1422,10 +1656,12 @@ function renderOfficialSection(container, official) {
   }
 
   const foot = el('div', 'dshu-ctx-foot')
-  const left = el('span', null, hasKey ? '余额：官方 API' : '费用：官方平台')
+  const footLeft = provider === 'opencode-go'
+    ? (hasOpencodeKey || isOpencodeKey(getApiKey()) ? '额度：官方 /v1/usage' : '额度：官方接口')
+    : (hasKey ? '余额：官方 API' : '费用：官方平台')
   const right = el('button', 'dshu-link', '⚙ 配置')
   right.onclick = () => openSettings()
-  foot.append(left, right)
+  foot.append(el('span', null, footLeft), right)
   sec.append(foot)
   container.append(sec)
 }
@@ -1461,20 +1697,48 @@ function openSettings() {
     return wrap
   }
 
+  // 提供方选择：auto 按 Key 前缀自动识别（sk-opencode- → OpenCode Go，其余 → DeepSeek）
+  const provWrap = el('div', 'dshu-field')
+  provWrap.append(el('div', 'k', '官方账户提供方'))
+  const provBar = el('div', 'dshu-field-bar')
+  const select = el('select')
+  const current = (getStoredCredential(STORAGE_PROVIDER) || 'auto').trim()
+  const provOptions = [
+    ['auto', '自动（按 Key 前缀识别，推荐）'],
+    ['deepseek', 'DeepSeek 官方'],
+    ['opencode-go', 'OpenCode Go'],
+  ]
+  for (const [value, label] of provOptions) {
+    const opt = el('option', null, label)
+    opt.value = value
+    if (value === current) opt.selected = true
+    select.append(opt)
+  }
+  select.onchange = () => { setStoredCredential(STORAGE_PROVIDER, select.value); refreshData() }
+  provBar.append(select)
+  provWrap.append(provBar, el('div', 'dshu-field-hint', '选 OpenCode Go 时，官方账户区块改为显示三窗口额度（滚动5h/周/月）。选自动则按 Key 前缀判断。'))
+  card.append(provWrap)
+
   card.append(mkField(
-    'API Key（查余额）',
+    'DeepSeek API Key（查余额）',
     STORAGE_KEY,
     'sk-…',
     'platform.deepseek.com → API Keys 创建。仅存本机浏览器，请求只发往 api.deepseek.com（CORS 已放行，全形态可用）。',
   ))
   card.append(mkField(
-    '平台 userToken（官方费用/用量）',
+    '平台 userToken（DeepSeek 官方费用/用量）',
     STORAGE_TOKEN,
     '粘贴 userToken',
     '登录 platform.deepseek.com 后 F12 → Application → Local Storage → 复制 userToken。请求发往 platform.deepseek.com，页面直连被 CORS 拦截，需扩展或油猴版（自动走后台桥）。',
   ))
+  card.append(mkField(
+    'OpenCode Go Key（查额度 · sk-opencode-…）',
+    STORAGE_OPENCODE_KEY,
+    'sk-opencode-…',
+    'opencode.ai/zen/go 订阅控制台获取。请求发往 https://opencode.ai/zen/go/v1/usage（Bearer 鉴权；未公开文档，2026-08 实测有效）。显示三个额度窗口的已用百分比与重置倒计时。',
+  ))
   const note = el('div', 'dshu-field-hint')
-  note.textContent = '凭证不出本机、不进任何日志；会话级费用仍为本地估算（官方无按会话计费接口），账户级余额/费用为官方准确值。'
+  note.textContent = '凭证不出本机、不进任何日志；会话级费用仍为本地估算（官方无按会话计费接口），账户级余额/额度为官方准确值。'
   card.append(note)
   overlay.append(card)
   panel.append(overlay)
@@ -1486,13 +1750,18 @@ const OFFICIAL_CSS = `
   font-size: 11px; padding: 0; text-decoration: underline;
 }
 .dshu-official { border-radius: 8px; padding: 8px 10px; background: var(--dsw-specific-input-major, rgb(24, 24, 26)); }
+.dshu-opencode-window { margin-bottom: 9px; }
+.dshu-opencode-window:last-child { margin-bottom: 2px; }
+.dshu-opencode-window .dshu-bar { margin: 3px 0 2px; }
+.dshu-opencode-window .dshu-ctx-foot { margin-top: 1px; }
 .dshu-field { margin-bottom: 10px; }
 .dshu-field .k { font-size: 11px; color: var(--dsw-alias-label-tertiary, rgb(151, 157, 166)); margin-bottom: 4px; }
 .dshu-field-bar { display: flex; gap: 6px; }
-.dshu-field-bar input {
+.dshu-field-bar input, .dshu-field-bar select {
   flex: 1; min-width: 0; background: var(--dsw-alias-button-floating-fill, rgb(33, 33, 35)); border: 1px solid var(--dsw-static-neutral-bluish-800, rgb(53, 54, 56));
   color: var(--dsw-alias-label-primary, rgb(235, 238, 242)); border-radius: 6px; padding: 5px 8px; font-size: 12px;
 }
+.dshu-field-bar select { cursor: pointer; }
 .dshu-field-hint { font-size: 10px; color: var(--dsw-alias-label-dimmed, rgb(101, 103, 107)); margin-top: 4px; line-height: 1.5; }
 .dshu-settings {
   position: absolute; inset: 0; background: rgba(10, 10, 12, 0.9); z-index: 2;
@@ -1720,7 +1989,7 @@ async function refreshDataCore(seq) {
 
   // 官方账户数据：独立节流（默认 60s 一次），与面板 5s 刷新解耦
   const now = Date.now()
-  const hasCredential = !!(getApiKey() || getPlatformToken())
+  const hasCredential = !!(getApiKey() || getPlatformToken() || getOpencodeKey())
   if (hasCredential && now - lastOfficialAt >= CONFIG.officialRefreshMs) {
     lastOfficialAt = now
     lastOfficial = await refreshOfficial()
@@ -2087,8 +2356,10 @@ const api = {
   foldUsageFromEvents,
   fetchBalance: fetchOfficialBalance,
   fetchPlatformUsage: fetchOfficialPlatformUsage,
+  fetchOpencodeUsage: fetchOpencodeGoUsage,
+  resolveProvider,
   autoImportApiKey,
-  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, aggregateOfficialUsage, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals,
+  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, aggregateOfficialUsage, parseOpencodeUsage, normalizeOpencodeWindow, isOpencodeKey, fmtCountdown, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals,
     // 测试探针（Node 无 DOM 环境验证加载状态机）：
     setLoadingTracer: (fn) => { loadingTracer = typeof fn === 'function' ? fn : null },
     setSessionSwitching: (v) => { sessionSwitching = !!v },

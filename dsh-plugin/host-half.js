@@ -1,15 +1,17 @@
 /**
  * 用量显示 · DSH 动态插件 — Host 半（code.host 的函数体）
  *
- * 通过 harness.handle 向 Client 半提供四个 JSON RPC：
+ * 通过 harness.handle 向 Client 半提供 JSON RPC：
  *   meta      { sessionId } → { firstTs, model }            会话首事件时间 + 主模型
  *   subagents { sessionId } → [{ id, label, tokenUsage }]   直接子代理用量（投影折叠）
  *   tree      { path }      → { path, entries:[{name,type,size}] }
  *   file      { path }      → { path, content, truncated }  （≤500KB，预览 ≤2 万字符）
- *   official  { apiKey?, userToken? } → { balance?, usage? } 官方余额 / 平台费用（curl）
+ *   official  { apiKey?, userToken? } → { balance?, usage? } DeepSeek 官方余额 / 平台费用（curl）
+ *   opencode  { opencodeKey? } → { provider, windows } | { error }  OpenCode Go 三窗口额度（curl）
+ *   apikey    {} → { apiKey?, opencodeGoApiKey?, source? }  宿主凭证（DeepSeek + OpenCode Go）
  *
  * 全部数据来自 DSH 宿主自身的服务（sessionQuery / subagents / sessionProjectionCache
- * / fs / shell），无页面抓取；失败一律优雅降级为 null / 空数组 / { error }。
+ * / fs / shell / credentials），无页面抓取；失败一律优雅降级为 null / 空数组 / { error }。
  * 本文件内容即 cordis_define 的 code.host 字符串。
  */
 return {
@@ -370,18 +372,142 @@ return {
       return out
     })
 
-    /** 自动获取宿主凭证里的 DeepSeek API Key（DEEPSEEK_API_KEY，与模型路由同一凭证）。 */
+    /** 自动获取宿主凭证：DeepSeek API Key + OpenCode Go Key（与模型路由同一凭证）。 */
     harness.handle('apikey', async () => {
       const creds = ctx.get('credentials')
-      if (creds === undefined) return { apiKey: null, source: null }
+      if (creds === undefined) return { apiKey: null, opencodeGoApiKey: null, source: null }
+      const out = { apiKey: null, opencodeGoApiKey: null, source: null }
       try {
         const resolved = await creds.resolve('DEEPSEEK_API_KEY')
         if (resolved && typeof resolved.value === 'string' && resolved.value.length > 0) {
-          return { apiKey: resolved.value, source: typeof resolved.source === 'string' ? resolved.source : 'file' }
+          out.apiKey = resolved.value
+          out.source = typeof resolved.source === 'string' ? resolved.source : 'file'
         }
       } catch { /* 凭证服务不可用时静默降级 */ }
-      return { apiKey: null, source: null }
+      try {
+        for (const name of ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY']) {
+          const resolved = await creds.resolve(name)
+          if (resolved && typeof resolved.value === 'string' && resolved.value.length > 0) {
+            out.opencodeGoApiKey = resolved.value
+            if (!out.source) out.source = typeof resolved.source === 'string' ? resolved.source : 'file'
+            break
+          }
+        }
+      } catch { /* 凭证服务不可用时静默降级 */ }
+      return out
     })
+
+    /** OpenCode Go 官方额度（curl 直连 opencode.ai，宿主侧无 CORS 问题）。 */
+    harness.handle('opencode', async (args) => {
+      const shell = ctx.get('shell')
+      if (shell === undefined) return { error: '宿主 shell 服务不可用（无法直连官方接口）' }
+      // Key 优先调用方传入（⚙ 手动粘贴），否则从宿主凭证解析
+      let key = args && typeof args.opencodeKey === 'string' ? args.opencodeKey.trim() : ''
+      if (!key) {
+        const creds = ctx.get('credentials')
+        if (creds !== undefined) {
+          try {
+            for (const name of ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY']) {
+              const resolved = await creds.resolve(name)
+              if (resolved && typeof resolved.value === 'string' && resolved.value.length > 0) {
+                key = resolved.value
+                break
+              }
+            }
+          } catch { /* 凭证服务不可用时静默降级 */ }
+        }
+      }
+      if (!key) return { error: '未找到 OpenCode Go Key（宿主凭证或 ⚙ 手动粘贴）' }
+      if (!/^sk-opencode-/i.test(key)) return { error: 'Key 形态不是 OpenCode Go（应为 sk-opencode- 开头）' }
+      try {
+        const mark = '__DSU_STATUS__'
+        const url = 'https://opencode.ai/zen/go/v1/usage'
+        const runCurl = async (exe) => {
+          const command = `${exe} -sS --max-time 15 -w "\\n${mark}%{http_code}" -H "Accept: application/json" -H "Authorization: Bearer ${key}" "${url}"`
+          const spec = shell.resolve({ command, timeoutMs: 20000, stdoutMaxBytes: 2 * 1024 * 1024 })
+          const result = await shell.run(spec)
+          if (result && result.stdout) {
+            const t = typeof result.stdout === 'string' ? result.stdout : (result.stdout.text || '')
+            if (t) return t
+          }
+          return null
+        }
+        let text = await runCurl('curl.exe')
+        if (!text) text = await runCurl('curl') // curl.exe 不存在等场景回退 curl（非 Windows）
+        if (!text) return { error: 'OpenCode Go 额度接口无响应' }
+        const idx = text.lastIndexOf(mark)
+        const status = idx >= 0 ? parseInt(text.slice(idx + mark.length).trim(), 10) : 0
+        const body = idx >= 0 ? text.slice(0, idx) : text
+        if (status === 401) return { error: 'OpenCode Go API Key 无效或已失效' }
+        if (status === 403) return { error: 'OpenCode Go 拒绝该 Key（403：套餐/区域受限？）' }
+        if (status >= 400) return { error: `OpenCode Go 额度接口返回 HTTP ${status}` }
+        const json = parseJsonSafe(body)
+        const windows = json ? parseOpencodeUsage(json) : []
+        if (windows.length === 0) return { error: 'OpenCode Go 额度接口未返回窗口数据（格式可能已变）' }
+        return { provider: 'opencode-go', windows }
+      } catch (error) {
+        return { error: `OpenCode Go 额度请求失败：${errText(error)}` }
+      }
+    })
+
+    /** 规范化一个 OpenCode 额度窗口条目（percent 0–100 或 0–1 小数；reset 为 ISO 或 Unix 秒/毫秒）。 */
+    function normalizeOpencodeWindow(key, label, raw, limit) {
+      const obj = raw && typeof raw === 'object' ? raw : {}
+      let percent = Number(obj.percent ?? obj.used_percent ?? obj.usedPercent)
+      if (!Number.isFinite(percent)) {
+        const used = Number(obj.used ?? obj.used_amount ?? obj.amount)
+        const lim = Number(obj.limit ?? obj.limit_amount)
+        percent = Number.isFinite(used) && Number.isFinite(lim) && lim > 0 ? (used / lim) * 100 : 0
+      }
+      if (Math.abs(percent) <= 1) percent *= 100
+      percent = Math.max(0, Math.min(100, percent || 0))
+      let resetAt = null
+      const rawReset = obj.resetsAt ?? obj.reset_at ?? obj.resetAt ?? obj.reset
+      if (typeof rawReset === 'string' && rawReset) {
+        const t = Date.parse(rawReset)
+        if (Number.isFinite(t)) resetAt = t
+      } else if (typeof rawReset === 'number' && rawReset > 0) {
+        resetAt = rawReset < 1e12 ? rawReset * 1000 : rawReset
+      } else if (Number(obj.reset_in_sec ?? obj.resetInSec) > 0) {
+        resetAt = Date.now() + Number(obj.reset_in_sec ?? obj.resetInSec) * 1000
+      }
+      return {
+        key,
+        label,
+        percent,
+        remaining: Math.max(0, 100 - percent),
+        limit: Number.isFinite(limit) ? limit : undefined,
+        status: typeof obj.status === 'string' && obj.status ? obj.status : 'ok',
+        resetAt,
+      }
+    }
+
+    /** 解析 /zen/go/v1/usage 响应 → 窗口数组（滚动5h/周/月 顺序；兼容别名键与 data 顶层）。 */
+    function parseOpencodeUsage(json) {
+      const root = json && typeof json === 'object' ? json : {}
+      const usage = root.usage && typeof root.usage === 'object' ? root.usage
+        : root.data && typeof root.data === 'object' ? root.data
+        : root
+      const pick = (keys) => {
+        for (const k of keys) {
+          const v = usage[k]
+          if (v && typeof v === 'object') return v
+        }
+        return null
+      }
+      const winDefs = [
+        ['rolling', ['rolling', 'window_5h', '5h', 'hourly'], '滚动 5h'],
+        ['weekly', ['weekly', 'window_weekly', 'week'], '周额度'],
+        ['monthly', ['monthly', 'window_monthly', 'month'], '月额度'],
+      ]
+      const limits = [12, 30, 60]
+      return winDefs
+        .map(([key, keys, label], i) => {
+          const raw = pick(keys)
+          return raw ? normalizeOpencodeWindow(key, label, raw, limits[i]) : null
+        })
+        .filter(Boolean)
+    }
 
     /** 聚合 amount/cost 两个响应 → 官方用量摘要。 */
     function aggregateOfficialUsage(amountPayload, costPayload) {

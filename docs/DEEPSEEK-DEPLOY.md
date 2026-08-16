@@ -89,5 +89,7 @@ Cordis 工具的标准会话中通过隐藏会话、内部 API 或审批绕过�
 Cordis 的 `timer` 服务刷新；它不会使用页面全局 `fetch` 或浏览器定时器绕开运行器边界。
 
 “官方账户”是可选功能。插件会尝试从 DSH 已配置的 `DEEPSEEK_API_KEY` 获取余额，并把
-可用 Key 写入本机该站点的浏览器 `localStorage`；平台用量只有用户手动填入 `userToken`
-时才查询。部署者应先确认这一行为符合本机凭证使用规则，且最终报告不得泄露任何凭证。
+可用 Key 写入本机该站点的浏览器 `localStorage`；OpenCode Go 额度会取
+`OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`（或手动粘贴的 `sk-opencode-…` Key）；
+平台用量只有用户手动填入 `userToken` 时才查询。部署者应先确认这一行为符合本机
+凭证使用规则，且最终报告不得泄露任何凭证。

@@ -7,7 +7,9 @@
  *   GET /dshu/ping          → { ok: true }
  *   GET /dshu/tree?path=…   → { path, entries: [{name, path, dir, size}] }（≤500 项）
  *   GET /dshu/file?path=…   → { path, content, size, truncated }（≤500KB / 预览 ≤2 万字符）
- *   GET /dshu/credentials   → { apiKey, source }（DEEPSEEK_API_KEY，宿主凭证）
+ *   GET /dshu/credentials   → { apiKey, opencodeGoApiKey, source }
+ *                            （DEEPSEEK_API_KEY + OPENCODE_GO_API_KEY/OPENCODE_API_KEY，
+ *                              宿主凭证；?name=XXX 可单独取指定凭证名）
  *
  * 安全：仅监听本机回环；路径必须为绝对路径且不含 .. 段；文件读取有大小上限；
  * 凭证只发给同源页面（与扩展存 localStorage 同信任域）。
@@ -115,21 +117,37 @@ return {
       }
     } })
 
-    webServer.register({ kind: 'exact', path: '/dshu/credentials', handler: async (_req, res) => {
+    webServer.register({ kind: 'exact', path: '/dshu/credentials', handler: async (req, res) => {
       const creds = ctx.get('credentials')
       if (creds === undefined) return sendJson(res, 503, { error: '宿主凭证服务不可用' })
-      try {
-        const resolved = await creds.resolve('DEEPSEEK_API_KEY')
-        if (resolved && typeof resolved.value === 'string' && resolved.value.length > 0) {
-          return sendJson(res, 200, {
-            apiKey: resolved.value,
-            source: typeof resolved.source === 'string' ? resolved.source : 'file',
-          })
+      const params = queryParams(req.url)
+      const resolveCred = async (name) => {
+        try {
+          const resolved = await creds.resolve(name)
+          return resolved && typeof resolved.value === 'string' && resolved.value.length > 0
+            ? { value: resolved.value, source: typeof resolved.source === 'string' ? resolved.source : 'file' }
+            : null
+        } catch {
+          return null
         }
-        return sendJson(res, 200, { apiKey: null, source: null })
-      } catch (error) {
-        sendJson(res, 500, { error: errText(error) })
       }
+      // 指定凭证名（?name=XXX）：只返回该凭证
+      if (params.name) {
+        const hit = await resolveCred(params.name)
+        return sendJson(res, 200, {
+          apiKey: hit ? hit.value : null,
+          source: hit ? hit.source : null,
+          name: params.name,
+        })
+      }
+      // 默认：DeepSeek Key + OpenCode Go Key（opencode-go 提供方的凭证名同 pi-ai 目录）
+      const deepseek = await resolveCred('DEEPSEEK_API_KEY')
+      const opencodeGo = await resolveCred('OPENCODE_GO_API_KEY') || await resolveCred('OPENCODE_API_KEY')
+      return sendJson(res, 200, {
+        apiKey: deepseek ? deepseek.value : null,
+        opencodeGoApiKey: opencodeGo ? opencodeGo.value : null,
+        source: deepseek ? deepseek.source : (opencodeGo ? opencodeGo.source : null),
+      })
     } })
   },
 }

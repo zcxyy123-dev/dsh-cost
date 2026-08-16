@@ -71,16 +71,22 @@ const HEAD = String.raw`/* =====================================================
         } catch { /* noop */ }
       }
 
-      /* ---------------- API Key 预填：宿主凭证（余额自动查询用） ---------------- */
+      /* ---------------- API Key 预填：宿主凭证（余额/额度自动查询用） ---------------- */
       function prefillApiKey() {
         try {
           if (typeof localStorage === 'undefined') return
-          if (localStorage.getItem('dshu.apiKey')) return
+          const hasKey = localStorage.getItem('dshu.apiKey')
+          const hasOcKey = localStorage.getItem('dshu.opencodeKey')
+          if (hasKey && hasOcKey) return
           fetch('/dshu/api/apikey', { cache: 'no-store' })
             .then((response) => response.json())
             .then((json) => {
-              if (json && typeof json.apiKey === 'string' && json.apiKey) {
+              if (!json) return
+              if (!hasKey && typeof json.apiKey === 'string' && json.apiKey) {
                 localStorage.setItem('dshu.apiKey', json.apiKey)
+              }
+              if (!hasOcKey && typeof json.opencodeGoApiKey === 'string' && json.opencodeGoApiKey) {
+                localStorage.setItem('dshu.opencodeKey', json.opencodeGoApiKey)
               }
             })
             .catch(() => { /* 宿主路由不可用时静默降级 */ })
