@@ -1,0 +1,6 @@
+# Normalize text line endings; generated bundles must stay LF so the
+# embedded code strings in usage-display.plugin.json match the source files
+# on every platform (verify-plugin.js also normalizes defensively).
+* text=auto
+*.js text eol=lf
+*.json text eol=lf
