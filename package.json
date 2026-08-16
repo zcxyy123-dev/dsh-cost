@@ -6,7 +6,8 @@
   "main": "lib/host.js",
   "exports": {
     ".": "./lib/host.js",
-    "./client": "./client/bundle.js"
+    "./client": "./client/bundle.js",
+    "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
