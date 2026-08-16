@@ -14,13 +14,29 @@
 
 ## 截图
 
-| 用量 | 文件 | 回合标注 |
-|---|---|---|
-| [![用量面板](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-panel.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-panel.png) | [![文件视图](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-files.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-files.png) | [![回合标注](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-annotate.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-annotate.png) |
+### 用量面板
 
-| 暗色主题 | 亮色主题 | 自动导入凭证 |
-|---|---|---|
-| [![暗色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-theme-dark.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-theme-dark.png) | [![亮色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-theme-light.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-theme-light.png) | [![自动导入](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@main/docs/screenshots/screenshot-auto-import.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/main/docs/screenshots/screenshot-auto-import.png) |
+[![用量面板](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-panel.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-panel.png)
+
+### 文件视图
+
+[![文件视图](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-files.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-files.png)
+
+### 回合标注
+
+[![回合标注](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-annotate.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-annotate.png)
+
+### 暗色主题
+
+[![暗色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-theme-dark.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-theme-dark.png)
+
+### 亮色主题
+
+[![亮色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-theme-light.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-theme-light.png)
+
+### 自动导入凭证
+
+[![自动导入](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-auto-import.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/49e709a5b7e091048494358723bbdb41d6f388be/docs/screenshots/screenshot-auto-import.png)
 
 ## 快速开始
 
