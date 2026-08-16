@@ -170,8 +170,18 @@ const cd = api._internal.fmtCountdown(Date.now() + 1000 * 60 * 60 * 3 + 1000 * 6
 eq('倒计时 3小时20分', cd, '3小时20分')
 eq('无重置时间 → 空串', api._internal.fmtCountdown(null), '')
 
-// 提供方解析（localStorage 无凭证时默认 deepseek）
-eq('默认提供方 deepseek', api.resolveProvider(), 'deepseek')
+// 提供方自动识别（纯自动，无配置 UI）
+eq('无凭证默认 deepseek', api.resolveProvider(), 'deepseek')
+storage.set('dshu.opencodeKey', 'sk-opencode-x')
+eq('opencode key 存在 → opencode-go', api.resolveProvider(), 'opencode-go')
+storage.delete('dshu.opencodeKey')
+storage.set('dshu.apiKey', 'sk-opencode-y')
+eq('apiKey 是 sk-opencode- → opencode-go', api.resolveProvider(), 'opencode-go')
+storage.delete('dshu.apiKey')
+eq('独有模型 minimax-m3 → opencode-go', api.resolveProvider('minimax-m3'), 'opencode-go')
+eq('独有模型 qwen3.7-plus → opencode-go', api.resolveProvider('qwen3.7-plus'), 'opencode-go')
+eq('deepseek-v4-flash 且无 opencode key → deepseek', api.resolveProvider('deepseek-v4-flash'), 'deepseek')
+eq('无模型参数 → deepseek', api.resolveProvider(undefined), 'deepseek')
 
 // ---- fetchOpencodeGoUsage：401 路径 + 成功路径（mock fetch；非动态宿主走官方桥） ----
 async function runFetchTests() {

@@ -138,7 +138,8 @@ function fmtCountdown(resetAt) {
 }
 
 /* ===================== 官方账户（DeepSeek / OpenCode Go 官方 API 直连） =====================
- * 提供方（⚙ 设置可选，默认按 Key 前缀自动识别，sk-opencode- → OpenCode Go）：
+ * 提供方纯自动识别（无需配置）：会话主模型命中 OpenCode Go 独有模型
+ * （minimax-m3 / qwen3.7-*）或存在 sk-opencode- 形态 Key 时 → OpenCode Go，否则 DeepSeek。
  *   DeepSeek 官方：
  *     1. 余额：GET https://api.deepseek.com/user/balance（公开接口，浏览器 CORS 放行，
  *        用 API Key 鉴权；Key 仅存本机 localStorage，请求只发往官方域名）
@@ -164,9 +165,11 @@ const STORAGE_TOKEN = 'dshu.platformToken'
 // 凭证 env 名为 OPENCODE_GO_API_KEY 或 OPENCODE_API_KEY）。Key 仅存本机 localStorage，
 // 请求只发往 opencode.ai。
 const STORAGE_OPENCODE_KEY = 'dshu.opencodeKey'
-const STORAGE_PROVIDER = 'dshu.provider' // 'auto' | 'deepseek' | 'opencode-go'
 const OPENCODE = {
   USAGE_URL: 'https://opencode.ai/zen/go/v1/usage',
+  // OpenCode Go 目录独有模型（pi-ai opencode-go.json）：会话主模型命中这些
+  // 即判定当前提供方为 OpenCode Go（deepseek-v4-* 两边都有，不作判据）。
+  OWNED_MODELS: new Set(['minimax-m3', 'qwen3.7-max', 'qwen3.7-plus']),
 }
 // 凭证通道：优先宿主内建桥（/dshu/credentials，同源，直读 DSH 宿主凭证）；
 // 回退本地桥（setup-key.js / setup-key.bat，3987 端口）。
@@ -279,14 +282,14 @@ function isOpencodeKey(key) {
 }
 
 /**
- * 当前官方账户提供方：'deepseek' | 'opencode-go'。
- * 设置（dshu.provider）可显式指定；'auto' 时按已存 Key 的形态判定——
- * 用户把 OpenCode Go Key 贴进任一 Key 输入框都能被识别。
+ * 当前官方账户提供方：'deepseek' | 'opencode-go'（纯自动识别，无需配置）：
+ *   1. 会话实际使用的模型是 OpenCode Go 独有模型（minimax-m3 / qwen3.7-*）→ opencode-go
+ *   2. 存在形态正确的 OpenCode Go Key（sk-opencode-，任一输入框）→ opencode-go
+ *   3. 其余 → deepseek
+ * @param {string} [sessionModel] 当前会话主模型 id（assistant/message 的 source.model）。
  */
-function resolveProvider() {
-  const mode = (getStoredCredential(STORAGE_PROVIDER) || 'auto').trim()
-  if (mode === 'opencode-go') return 'opencode-go'
-  if (mode === 'deepseek') return 'deepseek'
+function resolveProvider(sessionModel) {
+  if (sessionModel && OPENCODE.OWNED_MODELS.has(sessionModel)) return 'opencode-go'
   if (isOpencodeKey(getOpencodeKey()) || isOpencodeKey(getApiKey())) return 'opencode-go'
   return 'deepseek'
 }
@@ -928,10 +931,10 @@ function currencySymbol(code) {
   return code === 'USD' ? '$' : '¥'
 }
 
-/** 一次拉取全部官方数据（节流由调用方控制）。按当前提供方分流。 */
-async function refreshOfficial() {
+/** 一次拉取全部官方数据（节流由调用方控制）。按当前提供方（自动识别）分流。 */
+async function refreshOfficial(sessionModel) {
   const out = { balance: null, usage: null, opencode: null }
-  if (resolveProvider() === 'opencode-go') {
+  if (resolveProvider(sessionModel) === 'opencode-go') {
     try { out.opencode = await fetchOpencodeGoUsage() } catch (e) { log('opencode usage failed', e) }
     // DeepSeek Key 也配置了的话并排显示官方余额
     if (getApiKey()) {
@@ -1552,10 +1555,10 @@ function renderError(container, message) {
   container.append(el('div', 'dshu-err', `加载失败：${message}`))
 }
 
-function renderOfficialSection(container, official) {
+function renderOfficialSection(container, official, sessionModel) {
   const sec = el('div', 'dshu-sec dshu-official')
   const title = el('div', 'dshu-sec-title')
-  const provider = resolveProvider()
+  const provider = resolveProvider(sessionModel)
   title.append(el('span', null, '官方账户'), el('span', 'dshu-sub', provider === 'opencode-go' ? 'OpenCode Go 直连' : 'DeepSeek 直连'))
   sec.append(title)
 
@@ -1568,7 +1571,7 @@ function renderOfficialSection(container, official) {
     hint.append(el('span', 'k', '未配置凭证 · 自动探测中…'), el('button', 'dshu-link', '⚙ 配置/手动'))
     hint.querySelector('.dshu-link').onclick = () => openSettings()
     const tip = el('div', 'dshu-field-hint')
-    tip.textContent = '自动导入宿主凭证（动态宿主 apikey / dshub-1 桥）或双击 setup-key.bat；OpenCode Go 用户可点 ⚙ 粘贴 sk-opencode-… Key（也可手动选择提供方）'
+    tip.textContent = '自动导入宿主凭证（动态宿主 apikey / dshub-1 桥）或双击 setup-key.bat；OpenCode Go 用户可点 ⚙ 粘贴 sk-opencode-… Key（提供方按会话模型/Key 前缀自动识别）'
     sec.append(hint, tip)
     container.append(sec)
     return
@@ -1696,27 +1699,8 @@ function openSettings() {
     return wrap
   }
 
-  // 提供方选择：auto 按 Key 前缀自动识别（sk-opencode- → OpenCode Go，其余 → DeepSeek）
-  const provWrap = el('div', 'dshu-field')
-  provWrap.append(el('div', 'k', '官方账户提供方'))
-  const provBar = el('div', 'dshu-field-bar')
-  const select = el('select')
-  const current = (getStoredCredential(STORAGE_PROVIDER) || 'auto').trim()
-  const provOptions = [
-    ['auto', '自动（按 Key 前缀识别，推荐）'],
-    ['deepseek', 'DeepSeek 官方'],
-    ['opencode-go', 'OpenCode Go'],
-  ]
-  for (const [value, label] of provOptions) {
-    const opt = el('option', null, label)
-    opt.value = value
-    if (value === current) opt.selected = true
-    select.append(opt)
-  }
-  select.onchange = () => { setStoredCredential(STORAGE_PROVIDER, select.value); refreshData() }
-  provBar.append(select)
-  provWrap.append(provBar, el('div', 'dshu-field-hint', '选 OpenCode Go 时，官方账户区块改为显示三窗口额度（滚动5h/周/月）。选自动则按 Key 前缀判断。'))
-  card.append(provWrap)
+  // 提供方纯自动识别（无需选择）：按会话模型（minimax-m3/qwen3.7-* → OpenCode Go）
+  // 与 Key 形态（sk-opencode- → OpenCode Go）自动判定，官方账户区块随之切换显示。
 
   card.append(mkField(
     'DeepSeek API Key（查余额）',
@@ -1756,11 +1740,10 @@ const OFFICIAL_CSS = `
 .dshu-field { margin-bottom: 10px; }
 .dshu-field .k { font-size: 11px; color: var(--dsw-alias-label-tertiary, rgb(151, 157, 166)); margin-bottom: 4px; }
 .dshu-field-bar { display: flex; gap: 6px; }
-.dshu-field-bar input, .dshu-field-bar select {
+.dshu-field-bar input {
   flex: 1; min-width: 0; background: var(--dsw-alias-button-floating-fill, rgb(33, 33, 35)); border: 1px solid var(--dsw-static-neutral-bluish-800, rgb(53, 54, 56));
   color: var(--dsw-alias-label-primary, rgb(235, 238, 242)); border-radius: 6px; padding: 5px 8px; font-size: 12px;
 }
-.dshu-field-bar select { cursor: pointer; }
 .dshu-field-hint { font-size: 10px; color: var(--dsw-alias-label-dimmed, rgb(101, 103, 107)); margin-top: 4px; line-height: 1.5; }
 .dshu-settings {
   position: absolute; inset: 0; background: rgba(10, 10, 12, 0.9); z-index: 2;
@@ -1861,7 +1844,7 @@ function refreshPanel() {
   renderContextSection(body, s)
   renderMetrics(body, s)
   renderAnalysis(body, s)
-  renderOfficialSection(body, lastOfficial)
+  renderOfficialSection(body, lastOfficial, s.model)
   // 工作区文件独立渲染到"文件"视图（与"用量"视图切换显示）
   refreshFilesSection()
   const foot = shadow.querySelector('.dshu-foot-time')
@@ -1991,14 +1974,14 @@ async function refreshDataCore(seq) {
   const hasCredential = !!(getApiKey() || getPlatformToken() || getOpencodeKey())
   if (hasCredential && now - lastOfficialAt >= CONFIG.officialRefreshMs) {
     lastOfficialAt = now
-    lastOfficial = await refreshOfficial()
+    lastOfficial = await refreshOfficial(lastStats && lastStats.model)
     log('official', lastOfficial)
     if (seq === refreshSeq) refreshPanel()
   }
 
   // 无 API Key 时自动探测本地凭证服务（setup-key 工具），导入后立即刷新官方数据
   if (!hasCredential && (await autoImportApiKey())) {
-    lastOfficial = await refreshOfficial()
+    lastOfficial = await refreshOfficial(lastStats && lastStats.model)
     log('official after auto-import', lastOfficial)
     if (seq === refreshSeq) refreshPanel()
   }
