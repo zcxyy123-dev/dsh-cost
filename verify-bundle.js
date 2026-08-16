@@ -50,9 +50,10 @@ check('main 存在且指向宿主模块', Boolean(manifest.main) && fs.existsSyn
 const patchText = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8')
 check('cordis.patch.yml 引用包名', patchText.includes(`name: ${PACKAGE_ID}`))
 
-// 3. bundle 产物一致性
+// 3. bundle 产物一致性（CRLF/LF 归一化：Windows 检出下同样成立）
+const norm = (text) => String(text).replace(/\r\n/g, '\n')
 const bundleText = fs.readFileSync(bundlePath, 'utf8')
-check('client/bundle.js 与核心一致（重新生成后无差异）', bundleText === buildBundle())
+check('client/bundle.js 与核心一致（重新生成后无差异）', norm(bundleText) === norm(buildBundle()))
 
 // 4. bundle 语法与注册 id
 try {
@@ -86,4 +87,4 @@ if (failures.length > 0) {
 }
 console.log('\nBundle verification passed.')
 console.log(`Package: ${PACKAGE_ID} v${manifest.version}`)
-console.log(`Core SHA-256: ${require('node:crypto').createHash('sha256').update(fs.readFileSync(corePath, 'utf8')).digest('hex')}`)
+console.log(`Core SHA-256: ${require('node:crypto').createHash('sha256').update(norm(fs.readFileSync(corePath, 'utf8'))).digest('hex')}`)
