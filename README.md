@@ -4,6 +4,23 @@
 上下文占用、缓存命中率、token、费用估算、请求数、文件视图和回合用量标注。项目独立
 分发，不修改或重启 DSH 源码服务。
 
+## 安装方式
+
+**推荐：Bundle 插件包（DSH 官方插件接口，一条命令安装，重启常驻）**
+
+本仓库根目录就是标准 DSH bundle 插件包，安装：
+
+```bash
+dsh plugin --profile web add github:zcxyy123-dev/dsh-cost
+```
+
+重启 DSH 并刷新页面即可。详细说明、卸载与验证见 [Bundle 安装文档](docs/BUNDLE-INSTALL.md)。
+
+**备选：动态插件（Cordis 会话部署）**：见 [DeepSeek 安全部署提示词](docs/DEEPSEEK-DEPLOY.md)。
+
+**临时形态**：Chrome/Edge 扩展（`extension/`）、Tampermonkey（`userscript/`）、
+控制台注入（`console/`）——无需安装命令，见下方「其他安装形态」。
+
 ## 最新版定义
 
 **唯一受支持的动态插件版本是 `main / embedded-grid-column`（v2.0.0）。**
@@ -76,6 +93,14 @@ node dsh-plugin/test-client-build.js
 node dsh-plugin/test-host-half.js
 ```
 
+修改核心后还需重新生成 bundle 插件包并校验：
+
+```bash
+node build-bundle.js
+node verify-bundle.js
+node test-bundle-host.js
+```
+
 常规核心测试：
 
 ```bash
@@ -100,10 +125,16 @@ Issue、聊天记录、日志或提交。
 
 ```text
 usage-display.js                  第四列核心和回合标注
-dsh-plugin/build-client.js        Cordis Client 生成器
-dsh-plugin/host-half.js           受控 Host RPC
-dsh-plugin/usage-display.plugin.json  可部署 JSON
-docs/DEEPSEEK-DEPLOY.md           可直接发送给 DeepSeek 的提示词
+package.json                      bundle 插件包 manifest（dsh.bundle / dsh.client）
+cordis.patch.yml                  bundle 宿主半插件入口层
+lib/host.js                       bundle 宿主半（官方接口代理 / 凭证解析）
+client/bundle.js                  bundle 浏览器半（DSH 模块加载器格式，生成物）
+build-bundle.js                   client/bundle.js 生成器
+verify-bundle.js                  bundle 包结构校验
+test-bundle-host.js               bundle 宿主半单测
+dsh-plugin/usage-display.plugin.json  动态插件可部署 JSON
+docs/DEEPSEEK-DEPLOY.md           动态插件部署提示词
+docs/BUNDLE-INSTALL.md            bundle 插件包安装文档
 docs/AGENT-GUIDE.md               完整部署与验收手册
 ```
 
