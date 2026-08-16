@@ -52,5 +52,45 @@ setLoading(false)
 setLoading(false)
 assert(true, 'setLoading 引用计数无 DOM 安全')
 
+// ---- 加载遮罩显隐状态机（新行为：仅首次/会话切换后第一次请求显示） ----
+const traces = []
+const { setLoadingTracer, setSessionSwitching, setLastStats } = api._internal
+setLoadingTracer((show) => traces.push(show))
+
+// 5) 首次加载（尚无数据）→ 显示遮罩，结束后隐藏
+traces.length = 0
+setLoading(true)
+assert(traces.includes(true), '首次加载（无数据）显示遮罩')
+setLoading(false)
+assert(traces.includes(false), '首次加载结束隐藏遮罩')
+
+// 6) 会话切换后的第一次请求 → 显示遮罩
+traces.length = 0
+setSessionSwitching(true)
+setLoading(true)
+assert(traces.includes(true), '会话切换后的第一次请求显示遮罩')
+setLoading(false)
+assert(traces.includes(false), '切换后首次加载结束隐藏遮罩')
+assert(traces.length === 2, '切换后首次请求恰好显示一次')
+
+// 7) 后续常规刷新 → 静默更新，不显示遮罩
+traces.length = 0
+setLastStats({ used: 1 })
+setSessionSwitching(false)
+setLoading(true)
+assert(!traces.includes(true), '后续刷新静默更新，不显示遮罩')
+setLoading(false)
+assert(traces.length === 1 && traces[0] === false, '静默刷新仅收尾隐藏（遮罩本就未显示）')
+
+// 8) 会话切换期间的重叠请求：遮罩保持显示，全部结束后只隐藏一次
+traces.length = 0
+setSessionSwitching(true)
+setLoading(true)
+setLoading(true)
+assert(traces.includes(true), '切换后重叠请求保持遮罩显示')
+setLoading(false)
+setLoading(false)
+assert(traces.filter((v) => v === false).length === 1, '重叠请求全部结束后只隐藏一次')
+
 console.log(`\n全部 ${pass} 项断言通过 ✅`)
 process.exit(0)

@@ -1506,17 +1506,16 @@ const OFFICIAL_CSS = `
 
 /**
  * 加载状态开关（引用计数）。
- * 首次加载（尚无数据）立即显示模糊遮罩；常规刷新延迟 250ms 再显示，
- * 避免每次 5s 周期刷新都闪一下。所有加载结束后立即隐藏。
+ * 仅在"首次加载（尚无数据）或会话切换后的第一次请求"显示模糊遮罩 + 转圈；
+ * 后续周期刷新 / 手动刷新直接静默更新数据，不再显示遮罩。
  */
 function setLoading(on) {
   if (on) loadingCount += 1
   else loadingCount = Math.max(0, loadingCount - 1)
   if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null }
   if (loadingCount > 0) {
-    // 首次加载 / 会话切换 → 立即遮罩；常规周期刷新延迟 250ms 防闪烁
+    // 首次加载 / 会话切换后的第一次请求 → 立即遮罩；常规刷新静默，不显示
     if (!lastStats || sessionSwitching) applyLoading(true)
-    else loadingTimer = setTimeout(() => { loadingTimer = null; applyLoading(true) }, 250)
   } else {
     applyLoading(false)
     sessionSwitching = false
@@ -1555,8 +1554,12 @@ function watchSessionChanges() {
   if (sessionWatchTimer.unref) sessionWatchTimer.unref()
 }
 
+/** 测试探针：观察遮罩显隐（生产环境恒为 null，由 _internal.setLoadingTracer 设置）。 */
+let loadingTracer = null
+
 /** 应用加载遮罩的显隐（模糊层 + 旋转等待），并让右上角刷新按钮同步旋转。 */
 function applyLoading(show) {
+  if (loadingTracer) { try { loadingTracer(show) } catch { /* noop */ } }
   if (!shadow) return
   const overlay = shadow.querySelector('.dshu-loading')
   if (overlay) overlay.classList.toggle('on', show)
@@ -2010,7 +2013,8 @@ function mount() {
 
   panel.append(mainTabs, body, filesView, foot)
 
-  // 加载中模糊遮罩（旋转等待）：置顶于面板，refreshData 期间显示
+  // 加载中模糊遮罩（旋转等待）：仅首次加载与会话切换后的第一次请求期间显示，
+  // 常规刷新静默更新数据
   const loadingOverlay = el('div', 'dshu-loading')
   loadingOverlay.append(el('div', 'dshu-spinner'), el('div', 'dshu-loading-text', '正在加载数据…'))
   panel.append(loadingOverlay)
@@ -2084,7 +2088,12 @@ const api = {
   fetchBalance: fetchOfficialBalance,
   fetchPlatformUsage: fetchOfficialPlatformUsage,
   autoImportApiKey,
-  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, aggregateOfficialUsage, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals },
+  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, aggregateOfficialUsage, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals,
+    // 测试探针（Node 无 DOM 环境验证加载状态机）：
+    setLoadingTracer: (fn) => { loadingTracer = typeof fn === 'function' ? fn : null },
+    setSessionSwitching: (v) => { sessionSwitching = !!v },
+    setLastStats: (v) => { lastStats = v },
+  },
 }
 
 ;(function init() {
