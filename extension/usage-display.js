@@ -1,4 +1,4 @@
-/* DSH 用量显示 v1.1.0 — Chrome/Edge MV3 扩展用副本（由 usage-display.js 构建生成） */
+/* DSH 用量显示 v2.0.0 — Chrome/Edge MV3 扩展用副本（由 usage-display.js 构建生成） */
 /**
  * 用量显示 · Usage Display for DeepSeek Harness Web GUI
  * ========================================================
@@ -143,6 +143,17 @@ const LOCAL_CREDENTIAL_URL = 'http://127.0.0.1:3987/credentials'
 let lastAutoProbeAt = 0
 
 /**
+ * Dynamic Cordis packages receive this lexical adapter from
+ * dsh-plugin/build-client.js. The standalone userscript/extension builds do
+ * not define it and retain their normal same-origin/browser transport.
+ */
+function hasDynamicHost() {
+  return typeof __dshuHost !== 'undefined'
+    && __dshuHost !== null
+    && typeof __dshuHost.call === 'function'
+}
+
+/**
  * 自动获取 API Key：优先宿主凭证（/dshu/credentials，直读 DSH 宿主
  * DEEPSEEK_API_KEY），无宿主桥时回退本地桥。找到后存入 localStorage。
  * 无可用通道时静默跳过，每 30 秒重试一次。
@@ -152,6 +163,16 @@ async function autoImportApiKey() {
   if (getApiKey()) return false
   if (now - lastAutoProbeAt < 30000) return false
   lastAutoProbeAt = now
+  if (hasDynamicHost()) {
+    try {
+      const credential = await __dshuHost.call('apikey', {})
+      if (credential && typeof credential.apiKey === 'string' && credential.apiKey) {
+        setStoredCredential(STORAGE_KEY, credential.apiKey.trim())
+        log('auto-imported api key from dynamic host')
+        return true
+      }
+    } catch { /* credential access is optional */ }
+  }
   // 1) 宿主内建桥（同源，零配置）
   try {
     if (await probeHostBridge()) {
@@ -225,6 +246,10 @@ function parseJsonSafe(text) {
 async function fetchOfficialBalance() {
   const key = getApiKey()
   if (!key) return null
+  if (hasDynamicHost()) {
+    const result = await __dshuHost.call('official', { apiKey: key })
+    return result && result.balance ? result.balance : null
+  }
   const res = await officialFetch(OFFICIAL.BALANCE_URL, {
     headers: { Accept: 'application/json', Authorization: `Bearer ${key}` },
   })
@@ -272,6 +297,10 @@ function resetFilesState(root) {
 /** 探测宿主内建桥（一次，之后缓存）。 */
 async function probeHostBridge() {
   if (hostBridgeUp !== undefined) return hostBridgeUp
+  if (hasDynamicHost()) {
+    hostBridgeUp = true
+    return true
+  }
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 1500)
@@ -284,6 +313,11 @@ async function probeHostBridge() {
 
 /** 桥请求（目录树/文件预览）：优先宿主内建路由（同源），失败回退本地桥。 */
 async function bridgeGet(hostPath, localUrl, pathParam) {
+  if (hasDynamicHost()) {
+    const method = hostPath === '/tree' ? 'tree' : hostPath === '/file' ? 'file' : null
+    if (!method) return { error: `unsupported host bridge path: ${hostPath}` }
+    return __dshuHost.call(method, { path: pathParam })
+  }
   const hostOk = await probeHostBridge()
   if (hostOk) {
     try {
@@ -329,6 +363,7 @@ async function bridgeReadFile(filePath) {
 
 /** 系统默认方式打开路径（宿主 RPC host.openPath）。 */
 async function hostOpenPath(targetPath) {
+  if (hasDynamicHost()) return __dshuHost.openPath(targetPath)
   const result = await rpc('host.openPath', { path: targetPath })
   return result
 }
@@ -685,6 +720,10 @@ function aggregateOfficialUsage(amountPayload, costPayload) {
 async function fetchOfficialPlatformUsage() {
   const token = getPlatformToken()
   if (!token) return null
+  if (hasDynamicHost()) {
+    const result = await __dshuHost.call('official', { userToken: token })
+    return result && result.usage ? result.usage : null
+  }
   const now = new Date()
   const query = `?month=${now.getMonth() + 1}&year=${now.getFullYear()}`
   const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` }
@@ -732,6 +771,7 @@ function log(...args) {
 
 /* ============================== API 层 ==================================== */
 async function rpc(method, payload) {
+  if (hasDynamicHost()) return __dshuHost.call(method, payload)
   const response = await fetch(`/api/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -1111,6 +1151,7 @@ const CSS = `
 let hostEl = null
 let shadow = null
 let refreshTimer = null
+let domReadyHandler = null
 let lastStats = null
 let lastError = null // 会话数据加载错误（独立于 lastStats，避免被后续刷新覆盖）
 let lastOfficial = null
@@ -1997,6 +2038,10 @@ function mount() {
 }
 
 function destroy() {
+  if (domReadyHandler && typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+    document.removeEventListener('DOMContentLoaded', domReadyHandler)
+    domReadyHandler = null
+  }
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
   if (sessionWatchTimer) { clearInterval(sessionWatchTimer); sessionWatchTimer = null }
   if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null }
@@ -2046,7 +2091,11 @@ const api = {
   // Node/测试环境没有 document，不自动挂载面板（通过 __DSH_USAGE_DISPLAY 调用核心逻辑）
   if (typeof document === 'undefined') return
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount, { once: true })
+    domReadyHandler = () => {
+      domReadyHandler = null
+      mount()
+    }
+    document.addEventListener('DOMContentLoaded', domReadyHandler, { once: true })
   } else {
     mount()
   }

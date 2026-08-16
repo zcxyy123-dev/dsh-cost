@@ -1,141 +1,155 @@
-# AGENT 部署手册 · 把用量显示嵌入 DSH（从 0 到 1 完整执行）
+# Agent 部署手册
 
-> **阅读对象**：DeepSeek / Claude / 任何代码 Agent。本手册是 README「AI / Agent 部署手册」章节的完整可执行版。
-> **执行原则**：
-> 1. 逐条执行，每步验证通过再进入下一步；验证失败先查"故障矩阵"。
-> 2. **不要修改/重启正在运行的 DSH 服务**（3080 端口），不要删除仓库文件——本项目的部署全部是"无侵入"的。
-> 3. 需要用户操作的地方（装扩展/油猴、粘贴控制台代码）明确告知用户做什么、预期看到什么。
-> 4. 完成后按"验收清单"逐项确认，并如实汇报哪项未通过。
+面向 DeepSeek、Claude 和其他代码 Agent。目标是在不修改 DSH 源码、不重启 3080 服务、
+不绕过 Cordis 安全边界的前提下，安装当前发布的用量显示动态插件。
 
----
+> 快速使用：把 [DEEPSEEK-DEPLOY.md](DEEPSEEK-DEPLOY.md) 中的完整提示词发送给已经处于
+> Cordis 会话的 Agent。本页解释每一步为什么必须这样做。
 
-## 0. 前置检查
+## 1. 发布契约
+
+| 名称 | 值 |
+|---|---|
+| 仓库 | `https://github.com/zcxyy123-dev/dsh-cost.git` |
+| 分支 | `origin/main` |
+| 部署文件 | `dsh-plugin/usage-display.plugin.json` |
+| JSON `version` 字段 | `2.0.0`（旧版 1.x 一律拒绝） |
+| JSON `release` 字段 | `main / embedded-grid-column` |
+| 版本标识 | `main / embedded-grid-column` |
+| 精确版本 | 部署前 `git rev-parse HEAD` 的完整 SHA |
+| 必经校验 | `node dsh-plugin/verify-plugin.js`（必须输出 `Plugin verification passed.`、`Version: 2.0.0`、`Release: main / embedded-grid-column` 三行） |
+
+新版的可见特征是 DSH 主布局右侧新增一个固定宽度的**第四列**，其中有 `用量` 和 `文件`
+标签。它还包含加载遮罩和聊天回合的用量标注。以下均不是最新版验收结果：
+
+- 仅覆盖旧 `details` 侧栏的 `main / details-sidebar`。
+- 右下角悬浮窗。
+- 从聊天记录复制出的、无法校验来源的大 JSON。
+
+## 2. 先检查能力，后操作文件
+
+必须先确认当前会话的 Agent 工具列表同时有：
+
+```text
+cordis_define
+cordis_run
+```
+
+这是实际 DSH 兼容性条件；不要用一个推测的 DSH 版本号替代它。标准模式通常没有这些
+工具。缺少任一工具时，Agent 的唯一正确行为是停止，提示用户在 GUI 中打开/新建一个
+Cordis 预设会话后重试。
+
+严禁：
+
+- 创建隐藏辅助 Cordis 会话，再通过内部 API 代替用户执行部署。
+- 调用 `/api`、WebSocket 或直接写 DSH 存储来模拟 `cordis_define`、`cordis_run`。
+- 抓取审批帧或发送审批响应来绕过用户批准。
+- 修改 DSH 设置、Agent 预设、sandbox 或权限以取得工具。
+
+## 3. 获取可复现的产物
+
+在仓库根目录执行。命令只读取 Git 元数据和插件文件，唯一可能更新的内容是安全的
+fast-forward 合并；开始前工作区必须干净。
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/     # 期望 200
-node -v                                                            # 期望 v18+（可跳过，见 0.2）
-ls -la                                                            # 期望能看到 usage-display.js、dsh-plugin/ 等
+git remote get-url origin
+git status --porcelain
+git fetch origin main
+git merge --ff-only origin/main
+git rev-parse HEAD
+node --version
+node dsh-plugin/verify-plugin.js
 ```
 
-| 检查项 | 通过标准 | 失败处理 |
-|---|---|---|
-| DSH 在线 | HTTP 200 | 请用户先启动 DSH，再继续 |
-| Node.js | v18+ | 只影响扩展/测试/本地桥；纯插件路线可跳过 |
-| 仓库文件完整 | 见目录结构 | 重新拉取/解压 |
+判定规则：
 
-## 1. 形态选择
+1. `origin` 必须是本页给出的 GitHub 地址。
+2. `git status --porcelain` 必须没有输出；否则停止，绝不能 `reset`、`clean` 或覆盖用户改动。
+3. 仅在干净工作区执行 `fetch` 和 `merge --ff-only`。
+4. Node.js 建议 v18+；`verify-plugin.js` 必须同时输出 `Plugin verification passed.`、
+   `Version: 2.0.0` 和 `Release: main / embedded-grid-column` 三行。
+5. 用 JSON 解析器读取 `usage-display.plugin.json`，核对顶层 `version == "2.0.0"`、
+   `release == "main / embedded-grid-column"`；只把 `name`、`purpose`、`code.host`、
+   `code.client` 传给 `cordis_define`，不要传 `version`/`release` 等额外字段。
+6. 任一校验失败时停止。不要手工修补 `usage-display.plugin.json`，应由维护者运行
+   `node dsh-plugin/build-plugin.js` 重新生成并再次校验。
 
-| 形态 | 谁操作 | 何时选 |
-|---|---|---|
-| **A. DSH 动态插件**（推荐） | **Agent（你）** | 默认选择；用户不想动浏览器 |
-| B. Chrome/Edge 扩展 | 用户 | 用户想要"浏览器级"持久方案（重开浏览器也在） |
-| C. Tampermonkey 油猴 | 用户 | 用户已装油猴 |
-| D. 控制台粘贴 | 用户 | 临时试用 |
+## 4. 定义与运行
 
-> 提醒用户：A 与 B/C/D 可以并存，效果一致、互不干扰。
+把 JSON 作为结构化数据读取，而不是把它打印到聊天中：
 
-## 2. 路线 A：DSH 动态插件（原生嵌入）
-
-### A-1 读取插件包
-
-读取文件：`dsh-plugin/usage-display.plugin.json`
-
-结构说明（不要修改内容）：
-
-```jsonc
-{
-  "name": "用量显示",
-  "purpose": "……",
-  "code": {
-    "host": "…Host 半代码字符串…",
-    "client": "…Client 半代码字符串…"
-  }
-}
+```js
+const plugin = JSON.parse(readCompleteFile('dsh-plugin/usage-display.plugin.json'))
 ```
 
-### A-2 定义并激活
+`readCompleteFile` 代表 Agent 本地可完整读取文件的能力；任何 Read 工具若截断输出，都
+不能再用该输出部署。Agent 必须把以下字段原样传给当前会话的 `cordis_define` 工具：
 
-在当前 DSH 会话中调用 `cordis_define` 工具，参数：
+| 工具字段 | 来源 |
+|---|---|
+| `kind` | `new` |
+| `idPrefix` | `usgdp` |
+| `name` | `plugin.name` |
+| `purpose` | `plugin.purpose` |
+| Host 代码 | `plugin.code.host` |
+| Client 代码 | `plugin.code.client` |
 
-- `kind`: `"new"`
-- `idPrefix`: `"usgdp"`
-- `code.host`: 插件 JSON 的 `code.host` 字段值（原样字符串）
-- `code.client`: 插件 JSON 的 `code.client` 字段值（原样字符串）
+成功定义后，**只**使用该次 `cordis_define` 返回的实例标识调用 `cordis_run`。如果已经
+有 `usgdp-*` 实例，先报告实例和状态，未经用户明确确认不得停止、卸载或覆盖。
 
-定义成功后调用 `cordis_run`（传入定义返回的实例标识）激活。
-
-**预期**：工具返回成功；页面（若已打开）在数秒内出现用量面板。若页面未刷新导致面板未出现，请用户刷新一次页面（F5）。
-
-### A-3 验证
-
-- [ ] 页面出现面板，显示"上下文窗口 / 已用 / 命中率 / 费用 / 请求数"
-- [ ] 面板数据随会话变化（切换会话后数据跟随）
-
-### A-4（可选）激活宿主内建桥
-
-读取 `dsh-plugin/host-bridge.js`，调用 `cordis_define`（`kind: "new"`, `idPrefix: "dshub"`, `code.host` = 该文件内容，无 client），再 `cordis_run`。
-
-验证：
-
-```bash
-curl -s http://127.0.0.1:3080/dshu/ping            # 期望 {"ok":true}
-curl -s "http://127.0.0.1:3080/dshu/tree?path=C%3A%5C"   # 期望 JSON：{path, entries:[…]}
-```
-
-桥的作用：让注入脚本（B/C/D）免本地桥使用文件浏览 + 自动读宿主凭证查官方余额。
-
-### 重装（DSH 重启后）
-
-动态插件是进程级临时扩展，DSH 重启后路由消失。重装 = 重做 A-2（JSON 文件还在仓库里，一条消息即可完成）。
-
-## 3. 路线 B/C/D：用户手动安装
-
-| 路线 | 给用户的指令（原文） | 你的验证 |
-|---|---|---|
-| B | 浏览器打开 `chrome://extensions`（Edge 是 `edge://extensions`）→ 开启开发者模式 → "加载已解压的扩展程序" → 选择仓库的 `extension/` 目录 → 刷新 DSH 网页 | 刷新后 F12 Console 无报错；面板出现 |
-| C | 安装 Tampermonkey → 打开 `userscript/用量显示.user.js` → 点"安装" → 刷新 DSH 网页 | 同上 |
-| D | DSH 网页按 F12 → Console → 粘贴 `console/用量显示-控制台注入.js` 全部内容 → 回车 | 面板出现；执行 `__DSH_USAGE_DISPLAY.destroy()` 面板消失、页面布局恢复 |
-
-## 4. 官方余额（可选）
-
-优先级：
-
-1. **宿主桥已激活**（A-4）→ 什么都不用做，面板自动读取宿主 `DEEPSEEK_API_KEY`（凭证文件一般在 `~/.dsh/.credentials.yaml`，与 DSH 模型路由同一份）→ 数秒内显示官方余额。
-2. 未激活宿主桥 → 运行 `node setup-key.js`（或让用户双击 `setup-key.bat`）→ 工具自动探测常见凭证位置（`~/.dsh/`、`~/.reasonix/`、Reasonix 桌面版 AppData）→ 在 `127.0.0.1:3987` 提供一次性服务 → 面板自动导入后服务自动关闭。
-3. 手动：面板 ⚙ → 粘贴 API Key（只存本机浏览器 localStorage）。
-4. 官方费用（今日/本月）：需要 `platform.deepseek.com` 登录后从浏览器 Local Storage 复制 `userToken` 粘贴到 ⚙（仅扩展/油猴版支持；平台接口拦截页面直连）。
+如果 `cordis_run` 产生用户审批请求，Agent 必须等待 GUI 中用户的正常审批。用户拒绝、
+超时或未响应时如实报告，不得尝试替代审批。
 
 ## 5. 验收清单
 
-- [ ] 面板显示当前选中会话数据，切换会话跟随
-- [ ] `[用量|文件]` 切换正常；文件树展开、文本预览、📂 打开文件夹
-- [ ] 主题亮/暗切换，面板颜色跟随
-- [ ] 聊天区回合底部出现 `↑输入 · ↓输出 · ¥费用` 标注
-- [ ] （若配置了凭证）官方余额显示
-- [ ] 卸载验证：插件 `cordis_stop`；注入 `destroy()` / 刷新
+运行成功后刷新 DSH 页面一次，选中一个有历史消息的会话：
 
-## 6. 故障矩阵
+- [ ] 当前插件的 Host 与 Client 都处于 `running`（如有 `cordis_inspect_self`）。
+- [ ] 右侧新增第四列，而非旧的 `details` 侧栏。
+- [ ] 第四列能看到 `用量 / 文件` 标签。
+- [ ] 切换会话时短暂出现加载遮罩，随后数据更新。
+- [ ] 已完成回合底部出现输入、输出和费用标注。
+- [ ] 文件标签可读取当前会话工作目录的树和受限文本预览。
+- [ ] 停止插件或刷新页面后不会留下额外列、消息标注或仍在运行的刷新定时器。
 
-| 现象 | 可能原因 | 处理 |
-|---|---|---|
-| 面板不出现 | 页面地址不是 127.0.0.1:3080；注入失败；插件未激活 | 确认 URL；F5 刷新；F12 Console 看 `[用量显示]` 日志；重做 A-2 并确认 `cordis_run` 成功 |
-| 显示"等待会话数据" | 页面未选中会话 | 等 5 秒自动重试；确认 GUI 里选中了一个会话 |
-| 显示"加载失败" | DSH 服务未运行 / 接口变更 | `curl http://127.0.0.1:3080/` 确认在线；检查 Console |
-| 插件激活成功但无面板 | Client 半未挂载 | 刷新页面；确认 `cordis_run` 针对的是 `usgdp` 定义 |
-| 文件树空/报错 | 宿主 fs 服务不可用；路径权限 | 激活 A-4 桥后重试；本地桥 `node setup-key.js` |
-| 官方余额不显示 | 无凭证/凭证失效 | 依次尝试第 4 节 1→2→3 |
-| 控制台版官方费用被拦截 | 平台 CORS 拦截页面直连（已知限制） | 改用扩展/油猴版 |
-| 数字与预期不符 | 会话选错；费率/汇率 | 确认面板会话与 GUI 一致；检查 `CONFIG` |
+面板关闭按钮会清理当前页面挂载；需要再次显示时刷新页面，由运行中的动态包重新挂载。
 
-## 7. 汇报模板
+## 6. 可选官方账户数据
 
-完成后按此汇报：
+动态插件的 Host 半可读取 DSH 解析后的 `DEEPSEEK_API_KEY`，用于自动查询官方余额。Key
+会被 Client 保存到本机该站点的 `localStorage`。平台用量则要求用户自行填写 `userToken`。
 
+这不是部署所必需的功能。Agent 不得打印、记录、复制到报告或提交 API Key、userToken、
+Cookie 或原始官方响应。如果部署环境不允许浏览器本地保存 Key，应先让用户决定是否继续。
+
+## 7. 故障矩阵
+
+| 现象 | 正确处理 |
+|---|---|
+| 无 Cordis 工具 | 停止；用户切换会话。 |
+| Git 工作区脏 | 停止；报告改动路径。 |
+| 产物校验失败，或输出缺 `Version: 2.0.0` / `Release: main / embedded-grid-column` | 停止；仓库不是最新版，先让维护者推送，再重新 fetch/校验。 |
+| JSON `version`≠`2.0.0` 或 `release`≠`main / embedded-grid-column` | 停止；仓库内容不是目标版本，不部署。 |
+| JSON 截断 | 停止；改用完整结构化读取。 |
+| 审批等待 | 等待用户 GUI 操作。 |
+| 出现 `details` 侧栏 | 当作旧包；核对 SHA、发布标识和 manifest。 |
+| 第四列不出现 | 刷新页面；确认 `cordis_run` 成功，检查 Client 状态。 |
+| 显示“等待会话数据” | 选中一个会话，等待一次刷新。 |
+| 显示“加载失败” | 确认 DSH 在线，检查 Host/Client 运行状态；不要改 DSH 服务。 |
+| DSH 重启后消失 | 动态包是进程级；重复第 3-5 节。 |
+
+## 8. 汇报格式
+
+```text
+部署结果：成功 / 停止 / 部分完成
+仓库：<本地路径>
+提交：<git rev-parse HEAD>
+版本：2.0.0
+发布标识：main / embedded-grid-column
+插件校验：通过 / 失败（原因）
+Cordis 状态：<define/run/approval/Host/Client>
+验收：<逐项结果>
+未完成项与下一步：<如有>
 ```
-部署完成 ✅（或列出未通过项）
-- 形态：A 动态插件（+ B/C/D 可选）
-- 宿主桥：已激活/未激活
-- 官方余额：已配置（来源：宿主凭证/本地桥/手动）/未配置
-- 验收清单：x/y 项通过
-- 需要用户注意：……（如：DSH 重启后需一句话重装插件；userToken 需手动粘贴）
-```
+
+报告中不应包含凭证、Cookie、完整插件 JSON 或内部审批数据。

@@ -1,123 +1,111 @@
 # DSH 用量显示
 
-在 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) Web GUI 中显示当前会话的用量信息：上下文窗口、token、缓存命中率、费用、请求数和工作区文件。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) Web GUI 显示当前会话的
+上下文占用、缓存命中率、token、费用估算、请求数、文件视图和回合用量标注。项目独立
+分发，不修改或重启 DSH 源码服务。
 
-项目是独立分发的 JavaScript 产物，不修改 DSH 源码，不需要构建 DSH。
+## 最新版定义
+
+**唯一受支持的动态插件版本是 `main / embedded-grid-column`（v2.0.0）。**
+
+| 项目 | 正确值 |
+|---|---|
+| GitHub 仓库 | `https://github.com/zcxyy123-dev/dsh-cost.git` |
+| 代码来源 | 干净工作区中的 `origin/main` |
+| 部署产物 | `dsh-plugin/usage-display.plugin.json` |
+| JSON `version` 字段 | `2.0.0`（旧版 1.x 一律拒绝） |
+| JSON `release` 字段 | `main / embedded-grid-column` |
+| 构建来源 | `usage-display.js` + `dsh-plugin/host-half.js` + `dsh-plugin/build-client.js` |
+| 发布校验 | `node dsh-plugin/verify-plugin.js`（必须输出 passed / `Version: 2.0.0` / `Release: main / embedded-grid-column`） |
+| 界面验收 | DSH 右侧新增第四列，带 `用量 / 文件` 标签、加载遮罩和回合用量标注 |
+
+不要部署旧的 `main / details-sidebar` 包。旧包会占用 DSH `details` 侧栏；本仓库当前
+目标既不是那个侧栏，也不是右下角悬浮窗。看到第四列才是正确的最新版。
+
+实际部署提交必须由 `git rev-parse HEAD` 记录。发布标识描述界面形态，提交 SHA 才是可
+复现的精确版本。
+
+## 给 DeepSeek 部署
+
+请直接使用 [DeepSeek 安全部署提示词](docs/DEEPSEEK-DEPLOY.md)。它要求 Agent 依次检查：
+
+1. 当前会话是否已经有 `cordis_define` 和 `cordis_run`。
+2. 本地仓库是否干净且已 fast-forward 到 `origin/main`。
+3. 动态插件 JSON 是否通过确定性校验（`version: 2.0.0`、`release: main / embedded-grid-column`）。
+4. 用户是否正常批准 `cordis_run`。
+5. 界面是否为第四列而不是旧 `details` 侧栏。
+
+标准模式缺少 Cordis 工具时必须停止，让用户切换到 Cordis 会话。禁止创建隐藏辅助会话、
+调用 DSH 内部 API/WebSocket、修改权限边界或绕过用户审批。完整操作、验收和故障矩阵见
+[Agent 部署手册](docs/AGENT-GUIDE.md)。
+
+## 前置条件
+
+- DSH Web GUI 已在 `http://127.0.0.1:3080` 运行。
+- 要安装动态插件的 DSH 会话同时提供 `cordis_define` 和 `cordis_run`。
+- Node.js v18+ 用于本地构建与校验；已构建的 JSON 本身不要求用户安装 Node.js。
 
 ## 功能
 
-- **用量面板**：上下文占用、压缩阈值、会话指标、来源/类型分析和输入输出明细。
-- **回合标注**：每个已完成回合底部显示输入 token、输出 token 和费用；悬停可查看完整明细。
-- **文件视图**：浏览当前会话工作区，展开目录、预览文本文件或打开文件路径。
-- **主题跟随**：自动跟随 DSH 的亮色和暗色主题。
-- **官方账户**：可选显示 DeepSeek API 余额和平台用量。
+- 上下文窗口、压缩阈值、缓存命中率、费用估算、请求数和累计 token。
+- `用量 / 文件` 双视图，支持当前工作区文件树和受限文本预览。
+- 已完成聊天回合底部的输入、输出和费用标注。
+- 跟随 DSH 亮暗主题；切换会话时显示加载遮罩并刷新数据。
+- 可选读取 DeepSeek 官方余额和平台用量。
 
-## 截图
+## 其他安装形态
 
-### 用量面板
+不需要 Cordis 工具时，可用浏览器端产物：
 
-[![用量面板](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-panel.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-panel.png)
+- Chrome/Edge：加载 `extension/` 目录后刷新 DSH 页面。
+- Tampermonkey：安装 `userscript/用量显示.user.js`。
+- 临时试用：在 DSH DevTools Console 执行 `console/用量显示-控制台注入.js`。
 
-### 文件视图
+这些形态同样使用 `usage-display.js` 的第四列核心。动态插件是进程级扩展，DSH 重启后需
+按上面的部署流程重新定义并运行。
 
-[![文件视图](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-files.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-files.png)
+## 构建与校验
 
-### 回合标注
-
-[![回合标注](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-annotate.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-annotate.png)
-
-### 暗色主题
-
-[![暗色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-theme-dark.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-theme-dark.png)
-
-### 亮色主题
-
-[![亮色主题](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-theme-light.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-theme-light.png)
-
-### 自动导入凭证
-
-[![自动导入](https://cdn.jsdelivr.net/gh/zcxyy123-dev/dsh-cost@6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-auto-import.png)](https://github.com/zcxyy123-dev/dsh-cost/blob/6c9dd68f64f9c9e81b7cbf58ea4256ff3370bc26/docs/screenshots/screenshot-auto-import.png)
-
-## 快速开始
-
-前提：DSH Web GUI 已运行在 `http://127.0.0.1:3080`。
-
-### 方式一：DSH 动态插件
-
-这是最适合 Agent 的方式。将 [`dsh-plugin/usage-display.plugin.json`](dsh-plugin/usage-display.plugin.json) 的内容交给当前 DSH 会话中的 Agent，让 Agent 使用 `cordis_define` 定义插件，再用 `cordis_run` 激活。
-
-完整操作和验收步骤见 [`docs/AGENT-GUIDE.md`](docs/AGENT-GUIDE.md)；插件源码和安装说明见 [`dsh-plugin/install.md`](dsh-plugin/install.md)。
-
-### 方式二：浏览器扩展
-
-1. 打开 `chrome://extensions` 或 `edge://extensions`。
-2. 开启“开发者模式”，选择“加载已解压的扩展程序”。
-3. 选择本项目的 `extension/` 目录，然后刷新 DSH 页面。
-
-### 方式三：Tampermonkey 或控制台
-
-- Tampermonkey：安装 [`userscript/用量显示.user.js`](userscript/用量显示.user.js)，然后刷新页面。
-- 控制台：打开 [`console/用量显示-控制台注入.js`](console/用量显示-控制台注入.js)，复制全部内容到 DSH 的 DevTools Console 执行。
-
-安装后，面板会出现在 DSH 右侧；切换会话时会自动刷新数据。
-
-## 官方账户（可选）
-
-- 激活宿主桥后，面板会自动读取 DSH 的凭证并查询余额。
-- 没有宿主桥时，可运行 `node setup-key.js`，它只监听本机 `127.0.0.1:3987`，为面板提供凭证和文件浏览服务。
-- 平台今日/本月用量需要在面板设置中填写 `userToken`；余额只需要 API Key。
-- 完成后可关闭 `setup-key.js` 服务，不要把 API Key 或 `userToken` 写入 README、日志或提交。
-
-## 数据口径
-
-- 会话数据来自 DSH 同源 API：`session.history`、`subagent.list` 和 `subagent.history`。
-- token、上下文和缓存命中率使用 DSH 宿主的投影数据。
-- 单会话费用是根据内置价目表的本地估算；官方余额来自 DeepSeek 官方接口。
-
-## 配置与构建
-
-编辑 [`usage-display.js`](usage-display.js) 顶部的 `CONFIG`，可调整价格、货币、汇率、上下文窗口、刷新间隔和消息标注开关。
-
-修改核心代码后重新生成分发产物：
+修改核心或动态插件后，在仓库根目录运行：
 
 ```bash
 node build.js
-node verify-artifacts.js
+node dsh-plugin/build-plugin.js
+node dsh-plugin/verify-plugin.js
+node dsh-plugin/test-client-build.js
+node dsh-plugin/test-host-half.js
 ```
 
-## 开发与测试
+常规核心测试：
 
 ```bash
-node check-integrity.js
 node test-loading.js
 node test-annotate.js
 node test-official.js
 ```
 
-需要本地凭证桥的测试先运行 `node setup-key.js`；需要 DSH Web GUI 的 E2E 测试要求 `http://127.0.0.1:3080` 在线。`browser-e2e-*.js` 是可选的浏览器验证脚本。
+`check-integrity.js` 是历史脚本，当前会对已有的动态模式产生误报；它不能替代
+`dsh-plugin/verify-plugin.js`。
 
-## 项目结构
+## 数据与凭证
+
+会话与文件数据通过受控 DSH 服务读取。动态插件 Client 只通过 `host.call` 和 Cordis
+`timer` 服务工作，不使用页面全局网络或定时器来绕开运行器限制。
+
+官方余额功能会尝试解析 DSH 已配置的 `DEEPSEEK_API_KEY`，并将可用 Key 存入本机该站点
+的浏览器 `localStorage`。平台用量需要用户手动填入 `userToken`。不要将任一凭证写入
+Issue、聊天记录、日志或提交。
+
+## 目录
 
 ```text
-usage-display.js                 核心面板和聊天标注
-dsh-plugin/                      DSH 动态插件源码与 manifest
-extension/                       Chrome/Edge 扩展
-userscript/                      Tampermonkey 脚本
-console/                         控制台注入脚本
-docs/screenshots/                README 截图
-setup-key.js                     本地凭证与文件桥
-build.js                         生成分发产物
-verify-artifacts.js              验证分发产物
-docs/AGENT-GUIDE.md              Agent 完整部署手册
+usage-display.js                  第四列核心和回合标注
+dsh-plugin/build-client.js        Cordis Client 生成器
+dsh-plugin/host-half.js           受控 Host RPC
+dsh-plugin/usage-display.plugin.json  可部署 JSON
+docs/DEEPSEEK-DEPLOY.md           可直接发送给 DeepSeek 的提示词
+docs/AGENT-GUIDE.md               完整部署与验收手册
 ```
-
-## 隐私与安全
-
-- 不收集分析数据，不向第三方服务发送遥测。
-- 普通用量数据只读取 DSH 同源 API；官方余额和平台用量只请求 DeepSeek 官方域名。
-- 凭证只保存在当前浏览器会话、浏览器 `localStorage` 或本机回环桥中。
-- 文件预览限制为不超过 500 KB，并限制文本长度；二进制文件不会直接预览。
-- 通过注入脚本安装时，可执行 `window.__DSH_USAGE_DISPLAY.destroy()` 卸载面板，或直接刷新页面。
 
 ## License
 

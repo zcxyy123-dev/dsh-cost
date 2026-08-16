@@ -6,14 +6,19 @@
  */
 const fs = require('node:fs')
 const path = require('node:path')
+const { writeClient } = require('./build-client')
+const release = require('./release')
 
 const dir = __dirname
+writeClient()
 const host = fs.readFileSync(path.join(dir, 'host-half.js'), 'utf8')
 const client = fs.readFileSync(path.join(dir, 'client-half.js'), 'utf8')
 
 const plugin = {
-  name: '用量显示',
-  purpose: '在 DSH Web GUI 右下角悬浮显示当前会话用量：上下文占用、缓存命中率、费用估算、请求数、tokens 明细、按来源/类型分析、工作区文件浏览，以及官方余额/平台费用（凭证仅本次会话有效）。',
+  version: release.version,
+  release: `${release.channel} / ${release.id}`,
+  name: release.name,
+  purpose: release.purpose,
   code: { host, client },
 }
 

@@ -10,7 +10,7 @@ const { join } = require('node:path')
 
 const ROOT = __dirname
 const core = readFileSync(join(ROOT, 'usage-display.js'), 'utf8')
-const VERSION = '1.1.0'
+const VERSION = '2.0.0'
 
 mkdirSync(join(ROOT, 'userscript'), { recursive: true })
 mkdirSync(join(ROOT, 'console'), { recursive: true })

@@ -1,53 +1,78 @@
-# 用量显示 · DSH 动态插件（可分享）
+# 用量显示动态插件
 
-把用量显示面板做成 DSH 原生插件：在 Web GUI 右下角悬浮显示**当前选中会话**的用量，
-颜色跟随 DSH 主题，数据全部来自 DSH 宿主自身服务（会话投影、会话查询、子代理、
-fs、shell），**不修改 DSH 仓库、无需重启服务、无需构建工具链**。
+## 版本
+
+当前唯一可部署版本：**`main / embedded-grid-column`（v2.0.0）**。旧版 1.x
+（`main / details-sidebar`）一律不部署。
+
+部署产物 `usage-display.plugin.json` 顶层必须带有版本标识字段：
+
+| 字段 | 必须等于 |
+|---|---|
+| `version` | `2.0.0` |
+| `release` | `main / embedded-grid-column` |
+
+它由 `usage-display.js` 生成一个受 Cordis 保护的 Client，再与 `host-half.js` 打包成
+`usage-display.plugin.json`。正确界面是 DSH 右侧新增第四列，包含 `用量 / 文件` 标签、
+加载遮罩和回合用量标注；不是旧 `details` 侧栏，也不是右下角浮窗。
 
 ## 文件
 
-| 文件 | 说明 |
+| 文件 | 作用 |
 |---|---|
-| `usage-display.plugin.json` | **分享物**：`{ name, purpose, code: { host, client } }`，即 cordis_define 的输入 |
-| `host-half.js` | Host 半源码（可读版，改完跑 `node build-plugin.js` 重新生成 JSON） |
-| `client-half.js` | Client 半源码（可读版） |
-| `build-plugin.js` | 由两个半源码重新生成 JSON 的构建脚本 |
+| `usage-display.plugin.json` | 唯一可交给 `cordis_define` 的完整部署产物。 |
+| `host-half.js` | 受控会话、子代理、文件和官方账户 RPC。 |
+| `build-client.js` | 从根目录 `usage-display.js` 生成 Cordis Client 包装层。 |
+| `client-half.js` | 自动生成；不要手工编辑。 |
+| `release.js` | 发布标识的单一来源。 |
+| `verify-plugin.js` | 校验源码、生成产物和新版 UI 特征。 |
 
-## 安装（任何 DSH 会话，一句话）
+## 安装前校验
 
-把 `usage-display.plugin.json` 交给当前会话的 Agent，说：
+```bash
+node dsh-plugin/verify-plugin.js
+```
 
-> 读取 `usage-display.plugin.json`，用它的 `code.host` / `code.client` 调用
-> `cordis_define`（kind: new，idPrefix 用 `usgdp`），然后 `cordis_run` 激活。
+仅当输出包含以下三行时才可部署：
 
-Agent 会自动完成定义与激活。激活后页面右下角出现面板（若页面未刷新，
-等 Client 半加载完成即可；必要时刷新一次页面）。
+```text
+Plugin verification passed.
+Version: 2.0.0
+Release: main / embedded-grid-column
+```
 
-## 手动安装（无 Agent 时）
+当前 DSH Agent 会话还必须同时有 `cordis_define` 与 `cordis_run`。没有这些工具的标准模式
+不能安装此包，也不能用内部 API、隐藏会话或权限绕过代替。
 
-1. 打开 DSH Web GUI（`http://127.0.0.1:3080`），任一会话中粘贴 `usage-display.plugin.json` 内容。
-2. 请 Agent 按上面的话术执行；或自己对照 JSON 内容调用 `cordis_define` / `cordis_run` 工具。
+## 安装
 
-## 卸载 / 停用
+将 `usage-display.plugin.json` 以**完整结构化 JSON**交给当前 Cordis 会话中的 Agent，并要求：
 
-- 临时停用：会话里让 Agent 执行 `cordis_stop`。
-- 永久移除：`cordis_undefine`。
+1. 原样读取 `name`、`purpose`、`code.host`、`code.client`。
+2. 调用 `cordis_define`，使用 `kind: new` 和 `idPrefix: usgdp`。
+3. 只对定义结果返回的实例调用 `cordis_run`。
+4. 需要批准时等待用户在 GUI 中批准。
 
-## 特性
+不要把大型 `code` 字段从聊天输出复制出来；读取被截断时必须停止。已有 `usgdp-*` 实例时，
+先报告，未经用户确认不得停止或覆盖。
 
-- **上下文**：窗口 / 已用（`contextPressure.projectedTokens`）/ 压缩阈值 / 距压缩，进度条随占用变色。
-- **会话指标**：平均命中率、会话费用（Reasonix 同款价目表，本地估算）、运行时间、请求数（`sessionStats.steps`）、累计 tokens、主模型。
-- **用量分析**：按来源（主模型 / 子代理）与按类型（输入 / 输出）双视图。
-- **明细**：输入/输出、命中/未命中。
-- **工作区文件**：当前会话 cwd 目录树（点击展开，≤6 层直觉深度由 fs 列表控制）、文本预览（≤500KB / 2 万字符）、系统打开（`workspaces.openPath`）。
-- **官方账户**（自动）：API Key 由 Host 半**自动获取**——直读宿主凭证
-  `DEEPSEEK_API_KEY`（与模型路由同一份 `.credentials.yaml`，含环境变量/`.env` 回退），
-  面板加载后自动填充并查询官方余额，无需粘贴、无需本地桥；平台 userToken 可手动
-  填入查官方费用——均由宿主 curl 直连官方域名（页面 CORS 不影响），凭证只存本次
-  页面会话内存。⚙ 面板内有"↻ 重新自动获取"按钮。
-- 跟随 GUI 选中的会话；每 5 秒刷新子代理用量；会话投影由宿主实时推送；可拖拽、可折叠、主题跟随。
+完整可复制提示词和故障矩阵见 [../docs/DEEPSEEK-DEPLOY.md](../docs/DEEPSEEK-DEPLOY.md)。
 
-## 注意
+## 验收与移除
 
-- 动态插件是**进程级临时扩展**：DSH 重启后需要重新安装（重新执行上述安装步骤即可，代码都在 JSON 里）。
-- 面板不收集任何数据：请求只发往 DSH 宿主（127.0.0.1）与 DeepSeek 官方域名。
+刷新 DSH 页面后检查第四列、`用量 / 文件`、会话切换加载遮罩和回合标注。关闭面板后刷新页面
+可重新挂载。
+
+- 临时停用：让 Cordis 会话执行 `cordis_stop`。
+- 永久移除：在用户确认后执行 `cordis_undefine`。
+
+动态插件是进程级扩展；DSH 重启后需要重新安装。
+
+## 维护者构建
+
+```bash
+node dsh-plugin/build-plugin.js
+node dsh-plugin/verify-plugin.js
+node dsh-plugin/test-client-build.js
+node dsh-plugin/test-host-half.js
+```

@@ -30,6 +30,139 @@ return {
       return error instanceof Error ? error.message : String(error)
     }
 
+    // The browser half receives only the narrow data shapes below. Keep one
+    // short-lived immutable session snapshot while it walks history pages so
+    // a large session is not replayed once for every page.
+    const historyCache = new Map()
+    const HISTORY_CACHE_MS = 3000
+    const MAX_CACHED_SESSIONS = 12
+    const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
+
+    function sessionIdFrom(args, key = 'sessionId') {
+      return args && typeof args[key] === 'string' ? args[key] : ''
+    }
+
+    function timestamp(value) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+      if (typeof value === 'string') {
+        const parsed = Date.parse(value)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      return 0
+    }
+
+    function pageHistory(events, beforeSeq, requestedMax) {
+      const window = beforeSeq === undefined
+        ? events.slice()
+        : events.filter((event) => typeof event.seq === 'number' && event.seq < beforeSeq)
+      const maxMessages = Math.max(1, Math.min(200, Number(requestedMax) || 50))
+      let count = 0
+      let cut
+      for (let i = window.length - 1; i >= 0; i--) {
+        const event = window[i]
+        if (!event || !MESSAGE_TYPES.has(event.type)) continue
+        count += 1
+        const sources = Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []
+        const groupStart = sources.length > 0 ? Math.min(event.seq, ...sources) : event.seq
+        if (count >= maxMessages) {
+          cut = groupStart
+          break
+        }
+      }
+      const page = cut === undefined
+        ? window
+        : window.filter((event) => typeof event.seq === 'number' && event.seq >= cut)
+      return { events: page, hasMore: cut !== undefined && cut > 0 }
+    }
+
+    async function sessionSnapshot(sessionId, beforeSeq) {
+      const query = ctx.get('sessionQuery')
+      if (query === undefined) throw new Error('sessionQuery service is unavailable')
+      const cached = historyCache.get(sessionId)
+      if (cached && (beforeSeq !== undefined || Date.now() - cached.at < HISTORY_CACHE_MS)) return cached.snapshot
+      const snapshot = await query.readSession(sessionId)
+      historyCache.delete(sessionId)
+      historyCache.set(sessionId, { at: Date.now(), snapshot })
+      while (historyCache.size > MAX_CACHED_SESSIONS) historyCache.delete(historyCache.keys().next().value)
+      return snapshot
+    }
+
+    async function projectionSnapshot(sessionId) {
+      const cache = ctx.get('sessionProjectionCache')
+      if (cache === undefined) return { values: {} }
+      try {
+        const snapshot = await cache.coldSnapshot(sessionId)
+        return snapshot && snapshot.values ? snapshot : { values: {} }
+      } catch {
+        return { values: {} }
+      }
+    }
+
+    harness.handle('session.list', async () => {
+      const query = ctx.get('sessionQuery')
+      if (query === undefined) return { items: [] }
+      const records = await query.listSessions()
+      const items = []
+      for (const record of records || []) {
+        const header = record && (record.header || record.session || {})
+        const sessionId = typeof header.id === 'string'
+          ? header.id
+          : record && typeof record.id === 'string' ? record.id : ''
+        if (!sessionId) continue
+        items.push({
+          sessionId,
+          cwd: typeof header.cwd === 'string' ? header.cwd : undefined,
+          updatedAt: timestamp(header.updatedAt || header.lastUpdatedAt || header.createdAt),
+        })
+      }
+      return { items }
+    })
+
+    harness.handle('session.history', async (args) => {
+      const sessionId = sessionIdFrom(args)
+      if (!sessionId) throw new Error('session.history requires sessionId')
+      const beforeSeq = args && typeof args.beforeSeq === 'number' ? args.beforeSeq : undefined
+      const maxMessages = args && typeof args.maxMessages === 'number' ? args.maxMessages : undefined
+      const snapshot = await sessionSnapshot(sessionId, beforeSeq)
+      const page = pageHistory(Array.isArray(snapshot.events) ? snapshot.events : [], beforeSeq, maxMessages)
+      const out = {
+        events: page.events.map((event) => ({ event })),
+        hasMore: page.hasMore,
+      }
+      if (beforeSeq === undefined) out.projections = await projectionSnapshot(sessionId)
+      return out
+    })
+
+    harness.handle('subagent.list', async (args) => {
+      const parentSessionId = sessionIdFrom(args, 'parentSessionId')
+      if (!parentSessionId) return { entries: [] }
+      const subagents = ctx.get('subagents')
+      if (subagents === undefined) return { entries: [] }
+      const children = await subagents.listChildren(parentSessionId)
+      return {
+        entries: (children || [])
+          .filter((entry) => entry && entry.kind === 'child')
+          .slice(0, 40)
+          .map((entry) => ({
+            sessionId: entry.id,
+            mode: entry.mode || 'one-shot',
+            label: entry.label || null,
+          })),
+      }
+    })
+
+    harness.handle('subagent.history', async (args) => {
+      const parentSessionId = sessionIdFrom(args, 'parentSessionId')
+      const childSessionId = sessionIdFrom(args, 'childSessionId')
+      if (!parentSessionId || !childSessionId) throw new Error('subagent.history requires parentSessionId and childSessionId')
+      const subagents = ctx.get('subagents')
+      if (subagents === undefined) throw new Error('subagents service is unavailable')
+      const children = await subagents.listChildren(parentSessionId)
+      const child = (children || []).find((entry) => entry && entry.kind === 'child' && entry.id === childSessionId)
+      if (!child) throw new Error('requested subagent is not a direct child of this session')
+      return { events: [], projections: await projectionSnapshot(childSessionId) }
+    })
+
     /** 会话首事件时间 + 主模型（最后一个 assistant/message 的 source.model）。 */
     harness.handle('meta', async (args) => {
       const sessionId = args && typeof args.sessionId === 'string' ? args.sessionId : ''
