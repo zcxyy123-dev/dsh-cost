@@ -1,5 +1,5 @@
 /**
- * Playwright 解析器（browser-e2e-*.js / sample-theme.js / cors-probe.js 共用）
+ * Playwright 解析器（browser-e2e-*.js 共用）
  * ================================================================
  * 这些 E2E 脚本需要 Playwright + 系统 Edge/Chrome。本模块按以下顺序解析
  * playwright 包的位置，避免硬编码机器路径：
