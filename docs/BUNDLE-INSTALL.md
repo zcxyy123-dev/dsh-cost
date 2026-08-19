@@ -14,9 +14,15 @@
 | 文件 | 作用 |
 |---|---|
 | `package.json` | 插件包 manifest：`dsh.bundle.patch`（宿主半入口层）、`dsh.client`（浏览器 bundle 声明）、`exports["./client"]` |
-| `cordis.patch.yml` | 宿主半的 patch 层：插入 `dsh-cost-usage-display` 插件条目 |
-| `lib/host.js` | 宿主半：`/dshu/api/proxy`（官方接口代理，免 CORS）、`/dshu/api/apikey`（宿主凭证解析）；带回环信任栅栏与 URL/头白名单 |
+| `cordis.patch.yml` | 宿主半的 patch 层：插入 `dsh-cost` 插件条目 |
+| `lib/host.js` | 宿主半：`/dshu/api/proxy`（官方接口代理，免 CORS）、`/dshu/api/apikey` 与 `/dshu/credentials`（宿主凭证解析）、`/dshu/ping\|tree\|file`（工作区文件目录树/预览，走官方 `ctx.fs` 服务）；带回环信任栅栏与 URL/头白名单 |
 | `client/bundle.js` | 浏览器半：DSH 模块加载器格式（`__ModuleLoader__.load`），运行 `usage-display.js` 核心（右侧第四列 用量/文件 + 回合标注） |
+
+> **文件系统管理开箱即用（2026-08 重构）**：目录树 / 文本预览 / 凭证解析的路由已
+> **内置在本宿主半**（走 DSH 官方 `ctx.fs` FileSystem 服务，与 Agent 的 read/list 同一
+> 沙箱与路径语义），随 DSH 常驻、零配置。不再依赖 `dshub-1` 动态插件手动激活，也
+> 不需要 `setup-key.bat` 本地桥；打开文件夹/默认程序打开走宿主 RPC `host.openPath`，
+> 一直不受影响。与旧动态插件 `dshub-1` 同时存在时，同名路由冲突会跳过而非崩溃。
 
 校验命令：`node verify-bundle.js`（产物一致性、包结构、语法），`node test-bundle-host.js`（宿主半单测）。
 
@@ -53,7 +59,7 @@ dsh plugin --profile web add .
 ## 卸载
 
 ```bash
-dsh plugin --profile web remove dsh-cost-usage-display
+dsh plugin --profile web remove dsh-cost
 ```
 
 重启 DSH 后面板消失、路由移除。宿主半与浏览器半随插件条目一并卸载。
@@ -63,7 +69,8 @@ dsh plugin --profile web remove dsh-cost-usage-display
 | 检查 | 方法 |
 |---|---|
 | 宿主半已挂载 | 浏览器访问 `http://127.0.0.1:3080/dshu/api/apikey`（页面正常应返回 JSON，非 404） |
-| 浏览器半已挂载 | DevTools → Network：`/plugins/dsh-cost-usage-display/client.js` 返回 200 |
+| 文件系统管理可用 | 浏览器访问 `http://127.0.0.1:3080/dshu/ping` 返回 `{"ok":true}`；`/dshu/tree?path=C%3A%5CUsers` 返回目录 JSON；面板「文件」标签可直接展开工作区目录树并预览文本 |
+| 浏览器半已挂载 | DevTools → Network：`/plugins/dsh-cost/client.js` 返回 200 |
 | 产物一致性 | 仓库内 `node verify-bundle.js` 输出 `Bundle verification passed.` |
 | 官方余额 | 面板「官方账户」应自动带出宿主凭证中的 API Key（`DEEPSEEK_API_KEY`）并查询余额 |
 | OpenCode Go 额度 | 面板「官方账户」应显示滚动5h/周/月三窗口额度（宿主凭证 `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`，或 ⚙ 手动粘贴 `sk-opencode-…` Key） |
@@ -73,15 +80,18 @@ dsh plugin --profile web remove dsh-cost-usage-display
 - `/dshu/api/proxy` 只转发白名单内的官方 URL（api.deepseek.com / platform.deepseek.com
   的固定路径 + opencode.ai/zen/go/v1/usage），只透传 `authorization`（须 Bearer）与
   `accept` 头，其余一律丢弃。
-- 两个路由都要求回环 Host（防 DNS rebinding）、拒绝跨站 fetch 标记与不匹配的 Origin。
+- `/dshu/tree|file` 仅走官方 `ctx.fs` 服务，与 Agent 面对同一沙箱与权限判定；路径须为
+  绝对路径且不含 `..` 段；单目录最多 500 项、预览 ≤500KB 且最多 2 万字符，超限拒绝。
+- 全部路由都要求回环 Host（防 DNS rebinding）、拒绝跨站 fetch 标记与不匹配的 Origin。
 - 凭证只回给同源页面，不落盘、不进日志；面板侧 Key 仅存本机 `localStorage`。
 
 ## 常见问题
 
 | 现象 | 处理 |
 |---|---|
-| 第四列不出现 | 确认 `/plugins/dsh-cost-usage-display/client.js` 200、页面刷新过、DSH 已重启 |
+| 第四列不出现 | 确认 `/plugins/dsh-cost/client.js` 200、页面刷新过、DSH 已重启 |
 | `/dshu/api/apikey` 404 | 宿主半未挂载：检查 `dsh.profile.bundles` 是否包含本包、DSH 是否重启 |
-| 与动态插件同时运行 | 二者会互相检测并跳过重复挂载；建议只保留一种安装方式 |
+| 与动态插件同时运行 | 二者会互相检测并跳过重复挂载（宿主半也按路由去重，冲突跳过不崩溃）；建议只保留一种安装方式 |
+| 目录树/预览不可用 | 确认 `/dshu/ping` 返回 `{"ok":true}`（旧版宿主半没有该路由，升级后需重启 DSH）；`setup-key.bat` 本地桥不再需要 |
 | 官方余额显示加载失败 | 检查宿主网络能否直连 api.deepseek.com（代理/防火墙） |
 | OpenCode Go 额度显示失败 | 检查 Key 是否 `sk-opencode-` 开头、宿主网络能否直连 opencode.ai；接口未公开文档，若返回结构变化请把 Network 响应发维护者 |

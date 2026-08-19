@@ -5,7 +5,7 @@
  *
  * 产物契约（DSH client-modules）：
  *   - 经典脚本，加载后必须同步调用 window.__ModuleLoader__.load({ id, factory })；
- *   - id 必须等于 package.json 的 name（dsh-cost-usage-display）；
+ *   - id 必须等于 package.json 的 name（dsh-cost）；
  *   - factory(require) 返回 Cordis 插件对象 { name, apply(ctx) }；
  *   - require 只能解析模块表种子（react 等）——本 bundle 不使用任何外部模块。
  *
@@ -37,7 +37,7 @@ const HEAD = String.raw`/* =====================================================
   const PACKAGE_ID = ${JSON.stringify(PACKAGE_ID)}
   const loader = globalThis.__ModuleLoader__
   if (!loader || typeof loader.load !== 'function') {
-    console.error('[dsh-cost-usage-display] client-modules loader missing; bundle not registered')
+    console.error('[dsh-cost] client-modules loader missing; bundle not registered')
     return
   }
   loader.load({
@@ -71,23 +71,24 @@ const HEAD = String.raw`/* =====================================================
         } catch { /* noop */ }
       }
 
-      /* ---------------- API Key 预填：宿主凭证（余额/额度自动查询用） ---------------- */
+      /* ---------------- API Key 预填/同步：宿主凭证（余额/额度自动查询用） ----------------
+       * 同步语义：宿主凭证 = 会话模型路由实际使用的 Key；本地已有旧 Key 但与宿主
+       * 不一致（换过 Key / 旧 Key 失效）时以宿主为准覆盖，面板始终查"本会话计费账户"。 */
       function prefillApiKey() {
         try {
           if (typeof localStorage === 'undefined') return
-          const hasKey = localStorage.getItem('dshu.apiKey')
-          const hasOcKey = localStorage.getItem('dshu.opencodeKey')
-          if (hasKey && hasOcKey) return
           fetch('/dshu/api/apikey', { cache: 'no-store' })
             .then((response) => response.json())
             .then((json) => {
               if (!json) return
-              if (!hasKey && typeof json.apiKey === 'string' && json.apiKey) {
-                localStorage.setItem('dshu.apiKey', json.apiKey)
+              const sync = (name, value) => {
+                if (typeof value !== 'string' || !value) return
+                const prev = localStorage.getItem(name)
+                if (prev === value) return
+                localStorage.setItem(name, value)
               }
-              if (!hasOcKey && typeof json.opencodeGoApiKey === 'string' && json.opencodeGoApiKey) {
-                localStorage.setItem('dshu.opencodeKey', json.opencodeGoApiKey)
-              }
+              sync('dshu.apiKey', json.apiKey)
+              sync('dshu.opencodeKey', json.opencodeGoApiKey || json.opencodeApiKey)
             })
             .catch(() => { /* 宿主路由不可用时静默降级 */ })
         } catch { /* noop */ }
@@ -97,7 +98,7 @@ const HEAD = String.raw`/* =====================================================
       function runCore() {
         if (typeof document === 'undefined') return null
         if (globalThis.__DSH_USAGE_DISPLAY) {
-          console.warn('[dsh-cost-usage-display] core already running in this page; skip duplicate mount')
+          console.warn('[dsh-cost] core already running in this page; skip duplicate mount')
           return null
         }
         try {
@@ -112,7 +113,7 @@ const TAIL = String.raw`
             }
           }
         } catch (error) {
-          console.error('[dsh-cost-usage-display] core failed to start', error)
+          console.error('[dsh-cost] core failed to start', error)
         }
         return null
       }
@@ -132,7 +133,7 @@ const TAIL = String.raw`
                 delete globalThis.__dshuBridgeFetch
               }
             } catch { /* noop */ }
-          }, 'dsh-cost-usage-display.cleanup')
+          }, 'dsh-cost.cleanup')
         },
       }
     },

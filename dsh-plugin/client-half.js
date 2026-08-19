@@ -210,6 +210,15 @@ function fmtCountdown(resetAt) {
   return `${total}秒`
 }
 
+/** 重置的实际日期时间（本地时区，YYYY-MM-DD HH:mm）。 */
+function fmtDateTime(ts) {
+  if (!ts || !Number.isFinite(ts)) return ''
+  const d = new Date(ts)
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return `${date} ${time}`
+}
+
 /* ===================== 官方账户（DeepSeek / OpenCode Go 官方 API 直连） =====================
  * 提供方纯自动识别（无需配置）：会话主模型命中 OpenCode Go 独有模型
  * （minimax-m3 / qwen3.7-*）或存在 sk-opencode- 形态 Key 时 → OpenCode Go，否则 DeepSeek。
@@ -261,33 +270,35 @@ function hasDynamicHost() {
 }
 
 /**
- * 自动获取 API Key：优先宿主凭证（动态宿主 apikey RPC / /dshu/credentials 桥，
+ * 自动获取/同步 API Key：优先宿主凭证（动态宿主 apikey RPC / /dshu/credentials 桥，
  * 直读 DSH 宿主 DEEPSEEK_API_KEY + OPENCODE_GO_API_KEY），无宿主桥时回退本地桥。
  * DeepSeek Key 与 OpenCode Go Key 各存各的 localStorage（dshu.apiKey / dshu.opencodeKey）。
- * 无可用通道时静默跳过，每 30 秒重试一次。返回是否导入了新凭证。
+ * 同步语义（v2.0.1）：宿主凭证就是当前会话模型路由实际使用的 Key——本地已有旧 Key
+ * 但只要与宿主不一致（换过 Key / 旧 Key 已失效），一律以宿主为准覆盖，
+ * 面板始终查询"本会话真正计费的账户"。无可用通道时静默跳过，每 30 秒重试一次。
+ * 返回是否发生了凭证变更（调用方据此立即刷新官方数据）。
  */
 async function autoImportApiKey() {
   const now = Date.now()
-  const already = !!(getApiKey() && getOpencodeKey())
-  if (already) return false
   if (now - lastAutoProbeAt < 30000) return false
   lastAutoProbeAt = now
 
-  // 从桥响应提取两类凭证（缺谁补谁），返回是否新增。
+  // 从桥响应同步两类凭证（缺谁补谁；与宿主不一致时以宿主为准）。
   const absorb = (json) => {
     let changed = false
     if (json && typeof json === 'object') {
-      if (!getApiKey() && typeof json.apiKey === 'string' && json.apiKey) {
-        setStoredCredential(STORAGE_KEY, json.apiKey.trim())
-        changed = true
+      const sync = (name, value) => {
+        if (typeof value !== 'string' || !value.trim()) return false
+        const prev = getStoredCredential(name)
+        const next = value.trim()
+        if (prev === next) return false
+        setStoredCredential(name, next)
+        log('credential synced from host:', name, maskKey(next))
+        return true
       }
-      if (!getOpencodeKey()) {
-        const ok = json.opencodeGoApiKey || json.opencodeApiKey
-        if (typeof ok === 'string' && ok) {
-          setStoredCredential(STORAGE_OPENCODE_KEY, ok.trim())
-          changed = true
-        }
-      }
+      if (sync(STORAGE_KEY, json.apiKey)) changed = true
+      const ok = json.opencodeGoApiKey || json.opencodeApiKey
+      if (sync(STORAGE_OPENCODE_KEY, ok)) changed = true
     }
     return changed
   }
@@ -355,16 +366,41 @@ function isOpencodeKey(key) {
 }
 
 /**
- * 当前官方账户提供方：'deepseek' | 'opencode-go'（纯自动识别，无需配置）：
- *   1. 会话实际使用的模型是 OpenCode Go 独有模型（minimax-m3 / qwen3.7-*）→ opencode-go
- *   2. 存在形态正确的 OpenCode Go Key（sk-opencode-，任一输入框）→ opencode-go
- *   3. 其余 → deepseek
+ * 当前官方账户提供方：'opencode-go' | 'deepseek' | 'other'（纯自动识别，无需配置）：
+ *   1. 会话事件自带的 source.provider（权威：本会话 tokens 实际计费的提供方）→ 直接采用
+ *   2. 会话模型是 OpenCode Go 独有模型（minimax-m3 / qwen3.7-*）→ opencode-go
+ *   3. 存在形态正确的 OpenCode Go Key（sk-opencode-，任一输入框）→ opencode-go
+ *   4. 其余 → deepseek
  * @param {string} [sessionModel] 当前会话主模型 id（assistant/message 的 source.model）。
+ * @param {string} [sessionProvider] 当前会话提供方 id（assistant/message 的 source.provider，
+ *   如 'opencode-go' / 'deepseek-official'）。
  */
-function resolveProvider(sessionModel) {
+function resolveProvider(sessionModel, sessionProvider) {
+  if (sessionProvider && typeof sessionProvider === 'string') {
+    if (sessionProvider === 'opencode-go') return 'opencode-go'
+    if (/deepseek/i.test(sessionProvider)) return 'deepseek'
+    return 'other' // 未知提供方：显示原始 provider id，不臆断商家
+  }
   if (sessionModel && OPENCODE.OWNED_MODELS.has(sessionModel)) return 'opencode-go'
   if (isOpencodeKey(getOpencodeKey()) || isOpencodeKey(getApiKey())) return 'opencode-go'
   return 'deepseek'
+}
+
+/** 提供方 id → 商家显示名（自动识别用；未列出的提供方显示原始 id）。 */
+const PROVIDER_MERCHANT = {
+  'opencode-go': 'OpenCode Go',
+  'deepseek': 'DeepSeek 官方',
+  'deepseek-official': 'DeepSeek 官方',
+  'deepseek-chat': 'DeepSeek 官方',
+  'deepseek-reasoner': 'DeepSeek 官方',
+}
+
+/** 掩码 Key：只显示末 4 位（如 ···81a5），凭证永不完整上屏。 */
+function maskKey(key) {
+  const s = typeof key === 'string' ? key.trim() : ''
+  if (!s) return ''
+  if (s.length <= 8) return '·'.repeat(s.length)
+  return `···${s.slice(-4)}`
 }
 
 /**
@@ -390,6 +426,9 @@ function parseJsonSafe(text) {
   try { return JSON.parse(text) } catch { return null }
 }
 
+/** 401 重试护栏：只允许在同步宿主凭证后重试一次，避免死循环。 */
+let balance401Retried = false
+
 /** 余额：API Key → api.deepseek.com/user/balance。多币种取余额最大者（pickPrimaryBalance 语义）。 */
 async function fetchOfficialBalance() {
   const key = getApiKey()
@@ -401,7 +440,17 @@ async function fetchOfficialBalance() {
   const res = await officialFetch(OFFICIAL.BALANCE_URL, {
     headers: { Accept: 'application/json', Authorization: `Bearer ${key}` },
   })
-  if (res.status === 401) return { error: 'API Key 无效或已失效' }
+  if (res.status === 401) {
+    // 本地旧 Key 失效：宿主凭证 = 会话实际路由使用的 Key，先同步一次再重试
+    if (!balance401Retried) {
+      balance401Retried = true
+      try { await autoImportApiKey() } catch { /* noop */ }
+      if (getApiKey() && getApiKey() !== key) return fetchOfficialBalance()
+    }
+    balance401Retried = false
+    return { error: 'API Key 无效或已失效（401）：面板会自动改用宿主凭证，或点 ⚙ 更新' }
+  }
+  balance401Retried = false
   const json = parseJsonSafe(res.body)
   if (!json || !Array.isArray(json.balance_infos)) return null
   const infos = json.balance_infos.filter(i => i && i.total_balance !== undefined)
@@ -444,7 +493,10 @@ function normalizeOpencodeWindow(key, label, raw, limit) {
     const lim = Number(obj.limit ?? obj.limit_amount)
     percent = Number.isFinite(used) && Number.isFinite(lim) && lim > 0 ? (used / lim) * 100 : 0
   }
-  if (Math.abs(percent) <= 1) percent *= 100 // 小数（0–1）→ 百分比
+  // 官方实测返回整数 0–100（percent: 2/0/1，1 即 1%）。旧启发式把 ≤1 一律 ×100，
+  // 导致整数 1% 被误显示为 100% 已用（用户看到 5h/月额度"归零"）。只放大严格
+  // 位于 (0,1) 的纯小数比例；整数 1 保持 1%。
+  if (percent > 0 && percent < 1) percent *= 100
   percent = Math.max(0, Math.min(100, percent || 0))
 
   let resetAt = null
@@ -565,7 +617,11 @@ async function probeHostBridge() {
     const timer = setTimeout(() => controller.abort(), 1500)
     const resp = await fetch(`${HOST_BRIDGE}/ping`, { signal: controller.signal, cache: 'no-store' })
     clearTimeout(timer)
-    hostBridgeUp = resp.ok
+    // DSH 的 SPA fallback 对未注册路径返回 200 HTML（非 404），只靠 resp.ok
+    // 会把 HTML 误判为"宿主桥可用"，随后目录请求全解析失败。必须验证返回体
+    // 是 { ok: true } 才认定桥可用（bundle 宿主半的 /dshu/ping 返回该形状）。
+    const json = resp.ok ? parseJsonSafe(await resp.text()) : null
+    hostBridgeUp = Boolean(json && json.ok === true)
   } catch { hostBridgeUp = false }
   return hostBridgeUp
 }
@@ -600,7 +656,7 @@ async function bridgeGet(hostPath, localUrl, pathParam) {
   } catch {
     return { error: hostOk
       ? '宿主桥读取失败'
-      : '目录树/预览不可用：可让会话激活宿主桥（dshub-1），或双击 setup-key.bat 启动本地桥' }
+      : '目录树/预览不可用：宿主半文件路由未挂载（确认插件已安装且 DSH 已重启；无需 dshub-1 或本地桥）' }
   }
 }
 
@@ -620,11 +676,24 @@ async function bridgeReadFile(filePath) {
   return result
 }
 
-/** 系统默认方式打开路径（宿主 RPC host.openPath）。 */
+/** 系统默认方式打开路径（宿主 RPC host.openPath）。失败时把原因写入预览区，
+ *  不再静默吞掉（诊断误区：面板要能看到 open 失败的具体错误）。 */
 async function hostOpenPath(targetPath) {
-  if (hasDynamicHost()) return __dshuHost.openPath(targetPath)
-  const result = await rpc('host.openPath', { path: targetPath })
-  return result
+  try {
+    if (hasDynamicHost()) return await __dshuHost.openPath(targetPath)
+    const result = await rpc('host.openPath', { path: targetPath })
+    return result
+  } catch (error) {
+    const message = (error && error.message) ? error.message : String(error)
+    filesState.preview = {
+      path: targetPath,
+      error: `打开失败：${message}`,
+      loading: false,
+      open: true,
+    }
+    refreshFilesSection()
+    throw error
+  }
 }
 
 /** 目录条目 DOM（递归渲染展开的子树）。 */
@@ -733,7 +802,7 @@ function renderFilesSection(container, s) {
 
   if (filesState.bridgeUp === false) {
     const tip = el('div', 'dshu-field-hint')
-    tip.textContent = '目录树/预览不可用：可让会话激活宿主桥（dshub-1），或双击 setup-key.bat（打开文件夹/默认程序打开不受影响）'
+    tip.textContent = '目录树/预览暂不可用：宿主半文件路由未响应（确认插件已安装、DSH 已重启；打开文件夹/默认程序打开不受影响）'
     sec.append(tip)
     container.append(sec)
     return
@@ -762,9 +831,17 @@ function renderFilesSection(container, s) {
     if (pv.loading) info.append(el('span', 'dshu-spinner-sm'), '加载中…')
     else info.textContent = `${pv.error ? '⚠ ' : ''}${baseName(pv.path)}${pv.size !== undefined ? ` · ${fmtInt(pv.size)} 字节` : ''}${pv.lines !== undefined ? ` · ${fmtInt(pv.lines)} 行` : ''}`
     info.title = pv.path
+    const actions = el('span', 'dshu-preview-actions')
+    // 文件预览时也可一键用默认程序打开（不依赖行内 hover 按钮）
+    if (pv.path && !pv.open) {
+      const openBtn = el('button', 'dshu-btn', '↗ 打开')
+      openBtn.title = '用默认程序打开'
+      openBtn.onclick = () => void hostOpenPath(pv.path).catch(() => {})
+      actions.append(openBtn)
+    }
     const close = el('button', 'dshu-btn', '✕')
     close.onclick = () => { filesState.preview = null; refreshFilesSection() }
-    head.append(info, close)
+    head.append(info, actions, close)
     box.append(head)
     if (pv.error) {
       box.append(el('div', 'dshu-err', pv.error))
@@ -832,7 +909,7 @@ const FILES_CSS = `
 .dshu-file-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08)); }
 .dshu-file-icon { flex: none; font-size: 11px; }
 .dshu-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.dshu-file-actions { display: none; flex: none; gap: 2px; }
+.dshu-file-actions { display: inline-flex; flex: none; gap: 2px; }
 .dshu-file-row:hover .dshu-file-actions { display: inline-flex; }
 .dshu-file-action {
   border: none; background: var(--dsw-specific-input-major, rgb(44, 44, 46)); color: var(--dsw-alias-label-secondary, rgb(207, 211, 214));
@@ -847,6 +924,7 @@ const FILES_CSS = `
   padding: 5px 8px; background: var(--dsw-specific-input-major, rgb(44, 44, 46));
 }
 .dshu-preview-info { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, rgb(151, 157, 166)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dshu-preview-actions { display: inline-flex; flex: none; gap: 4px; margin-left: auto; }
 .dshu-preview-code {
   margin: 0; padding: 8px 10px; max-height: 220px; overflow: auto; white-space: pre;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 10.5px; line-height: 1.55;
@@ -1005,9 +1083,16 @@ function currencySymbol(code) {
 }
 
 /** 一次拉取全部官方数据（节流由调用方控制）。按当前提供方（自动识别）分流。 */
-async function refreshOfficial(sessionModel) {
+async function refreshOfficial(sessionModel, sessionProvider) {
   const out = { balance: null, usage: null, opencode: null }
-  if (resolveProvider(sessionModel) === 'opencode-go') {
+  // 空白/新会话没有历史事件：向宿主取默认模型路由（agent-default-model）作为计费去向
+  if (!sessionModel && !sessionProvider && hasDynamicHost()) {
+    try {
+      const route = await __dshuHost.call('route', {})
+      if (route && (route.provider || route.model)) out.route = route
+    } catch { /* 服务不可用时静默降级 */ }
+  }
+  if (resolveProvider(sessionModel, sessionProvider) === 'opencode-go') {
     try { out.opencode = await fetchOpencodeGoUsage() } catch (e) { log('opencode usage failed', e) }
     // DeepSeek Key 也配置了的话并排显示官方余额
     if (getApiKey()) {
@@ -1196,17 +1281,22 @@ function computeStats(raw) {
   let firstTs = raw.firstTs
   let lastTs = raw.lastTs
   let model = raw.model
-  if (firstTs === undefined || lastTs === undefined || model === undefined) {
+  let provider = raw.provider
+  if (firstTs === undefined || lastTs === undefined || model === undefined || provider === undefined) {
     for (const entry of events) {
       const event = entry && entry.event ? entry.event : entry
       const ts = typeof event.time === 'number' ? event.time : typeof event.ts === 'number' ? event.ts : undefined
       if (ts === undefined) continue
       if (firstTs === undefined || ts < firstTs) firstTs = ts
       if (lastTs === undefined || ts > lastTs) lastTs = ts
-      // 会话主模型：取最后一个带模型来源的 assistant/message
-      if (model === undefined && event.type === 'assistant/message') {
+      // 会话主模型/提供方：取最后一个带来源的 assistant/message
+      // （provider 即本会话 tokens 实际计费的商家，自动识别依据）
+      if (event.type === 'assistant/message') {
         const source = event.data && event.data.message && event.data.message.source
-        if (source && typeof source.model === 'string') model = source.model
+        if (source) {
+          if (model === undefined && typeof source.model === 'string') model = source.model
+          if (provider === undefined && typeof source.provider === 'string') provider = source.provider
+        }
       }
     }
   }
@@ -1256,6 +1346,7 @@ function computeStats(raw) {
     untilCompress,
     // 会话指标
     model,
+    provider,
     hitRate,
     cost: totalCost,
     costMain,
@@ -1438,7 +1529,7 @@ let sessionSwitching = false // 本次加载由会话切换触发 → 立即显�
 // （firstTs 是会话不变常量，token/命中率/请求数等全部来自尾页投影）
 // 同时持久化到 localStorage：刷新页面也不用再次全量拉取。
 const SESSION_FIRST_STORAGE = 'dshu.sessionFirst'
-let firstTsCache = null // { sessionId, firstTs, model }
+let firstTsCache = null // { sessionId, firstTs, model, provider }
 
 function loadFirstTsCache() {
   try {
@@ -1446,7 +1537,12 @@ function loadFirstTsCache() {
     if (raw) {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed.sessionId === 'string' && typeof parsed.firstTs === 'number') {
-        firstTsCache = { sessionId: parsed.sessionId, firstTs: parsed.firstTs, model: parsed.model || undefined }
+        firstTsCache = {
+          sessionId: parsed.sessionId,
+          firstTs: parsed.firstTs,
+          model: parsed.model || undefined,
+          provider: parsed.provider || undefined,
+        }
         return firstTsCache
       }
     }
@@ -1628,12 +1724,32 @@ function renderError(container, message) {
   container.append(el('div', 'dshu-err', `加载失败：${message}`))
 }
 
-function renderOfficialSection(container, official, sessionModel) {
+function renderOfficialSection(container, official, sessionModel, sessionProvider) {
   const sec = el('div', 'dshu-sec dshu-official')
+  // 空白会话兜底：宿主默认模型路由（agent-default-model）作为计费去向
+  const fallbackRoute = official && official.route && (official.route.provider || official.route.model) ? official.route : null
+  const effModel = sessionModel || (fallbackRoute ? fallbackRoute.model : null)
+  const effProvider = sessionProvider || (fallbackRoute ? fallbackRoute.provider : null)
   const title = el('div', 'dshu-sec-title')
-  const provider = resolveProvider(sessionModel)
-  title.append(el('span', null, '官方账户'), el('span', 'dshu-sub', provider === 'opencode-go' ? 'OpenCode Go 直连' : 'DeepSeek 直连'))
+  const provider = resolveProvider(effModel, effProvider)
+  const subLabel = provider === 'opencode-go' ? 'OpenCode Go 直连'
+    : provider === 'deepseek' ? 'DeepSeek 直连'
+    : (PROVIDER_MERCHANT[effProvider] || (effProvider ? `提供方 ${effProvider}` : 'DeepSeek 直连'))
+  title.append(el('span', null, '官方账户'), el('span', 'dshu-sub', subLabel))
   sec.append(title)
+
+  // 计费去向（自动识别：会话事件 source.provider/source.model + 所用 Key 掩码）
+  if (effModel || effProvider) {
+    const route = el('div', 'dshu-route')
+    const isDefault = !sessionModel && !sessionProvider && fallbackRoute
+    const merchant = PROVIDER_MERCHANT[effProvider] || effProvider || ''
+    route.append(el('span', null, `${isDefault ? '默认计费路由' : '本会话计费'}：${merchant ? `${merchant} · ` : ''}${effModel || '?'}`))
+    const envName = provider === 'opencode-go' ? 'OPENCODE_GO_API_KEY'
+      : provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : null
+    const routeKey = provider === 'opencode-go' ? getOpencodeKey() : getApiKey()
+    if (envName && routeKey) route.append(el('span', 'dshu-route-key', `${envName} ${maskKey(routeKey)}`))
+    sec.append(route)
+  }
 
   const hasKey = !!getApiKey()
   const hasToken = !!getPlatformToken()
@@ -1644,7 +1760,7 @@ function renderOfficialSection(container, official, sessionModel) {
     hint.append(el('span', 'k', '未配置凭证 · 自动探测中…'), el('button', 'dshu-link', '⚙ 配置/手动'))
     hint.querySelector('.dshu-link').onclick = () => openSettings()
     const tip = el('div', 'dshu-field-hint')
-    tip.textContent = '自动导入宿主凭证（动态宿主 apikey / dshub-1 桥）或双击 setup-key.bat；OpenCode Go 用户可点 ⚙ 粘贴 sk-opencode-… Key（提供方按会话模型/Key 前缀自动识别）'
+    tip.textContent = '自动导入宿主凭证（宿主半 /dshu/credentials，随 DSH 常驻）或双击 setup-key.bat；OpenCode Go 用户可点 ⚙ 粘贴 sk-opencode-… Key（提供方按会话模型/Key 前缀自动识别）'
     sec.append(hint, tip)
     container.append(sec)
     return
@@ -1673,7 +1789,8 @@ function renderOfficialSection(container, official, sessionModel) {
       wrap.append(head, bar)
       const foot = el('div', 'dshu-ctx-foot')
       const rt = fmtCountdown(w.resetAt)
-      foot.append(el('span', null, `剩余 ${(w.remaining).toFixed(1)}%${rt ? ` · 重置 ${rt}` : ''}`))
+      const dt = fmtDateTime(w.resetAt)
+      foot.append(el('span', null, `剩余 ${(w.remaining).toFixed(1)}%${rt ? ` · 重置 ${rt}` : ''}${dt ? ` · ${dt}` : ''}`))
       wrap.append(foot)
       rows.append(wrap)
     }
@@ -1690,16 +1807,21 @@ function renderOfficialSection(container, official, sessionModel) {
     const sym = currencySymbol(b.currency)
     const row = el('div', 'dshu-row')
     const val = el('span', 'v green')
-    val.append(`${sym}${b.total.toFixed(2)}`, el('span', 'unit', `充值 ${sym}${b.toppedUp.toFixed(2)} / 赠送 ${sym}${b.granted.toFixed(2)}`))
+    val.append(`${sym}${b.total.toFixed(2)}`, el('span', 'unit', `充值 ${sym}${b.toppedUp.toFixed(2)} / 赠送 ${sym}${b.granted.toFixed(2)} · Key ${maskKey(getApiKey())}`))
     row.append(el('span', 'k', `余额${b.available ? '' : '（不可用）'}`), val)
     sec.append(row)
+    if (!b.available) {
+      const hint = el('div', 'dshu-field-hint')
+      hint.textContent = '账户不可用（is_available=false）：官方判定当前不可用，常见原因是余额不足/欠费冻结——Key 本身未必失效。'
+      sec.append(hint)
+    }
   } else if (official && official.balance && official.balance.error) {
     const row = el('div', 'dshu-row')
-    row.append(el('span', 'k', '余额'), el('span', 'v', official.balance.error))
+    row.append(el('span', 'k', `余额 · Key ${maskKey(getApiKey())}`), el('span', 'v', official.balance.error))
     sec.append(row)
   } else if (hasKey) {
     const row = el('div', 'dshu-row')
-    row.append(el('span', 'k', '余额'), el('span', 'v', '查询失败'))
+    row.append(el('span', 'k', `余额 · Key ${maskKey(getApiKey())}`), el('span', 'v', '查询失败'))
     sec.append(row)
   }
 
@@ -1731,9 +1853,10 @@ function renderOfficialSection(container, official, sessionModel) {
   }
 
   const foot = el('div', 'dshu-ctx-foot')
+  const ocKeyShown = maskKey(getOpencodeKey() || (isOpencodeKey(getApiKey()) ? getApiKey() : ''))
   const footLeft = provider === 'opencode-go'
-    ? (hasOpencodeKey || isOpencodeKey(getApiKey()) ? '额度：官方 /v1/usage' : '额度：官方接口')
-    : (hasKey ? '余额：官方 API' : '费用：官方平台')
+    ? (hasOpencodeKey || isOpencodeKey(getApiKey()) ? `额度：官方 /v1/usage · Key ${ocKeyShown}` : '额度：官方接口')
+    : (hasKey ? `余额：官方 API · Key ${maskKey(getApiKey())}` : '费用：官方平台')
   const right = el('button', 'dshu-link', '⚙ 配置')
   right.onclick = () => openSettings()
   foot.append(el('span', null, footLeft), right)
@@ -1772,8 +1895,10 @@ function openSettings() {
     return wrap
   }
 
-  // 提供方纯自动识别（无需选择）：按会话模型（minimax-m3/qwen3.7-* → OpenCode Go）
-  // 与 Key 形态（sk-opencode- → OpenCode Go）自动判定，官方账户区块随之切换显示。
+  // 提供方纯自动识别（无需选择）：优先会话事件 source.provider（tokens 实际计费的
+  // 提供方，权威），其次会话模型（minimax-m3/qwen3.7-* → OpenCode Go）与 Key 形态
+  // （sk-opencode- → OpenCode Go）兜底；官方账户区块顶部显示"本会话计费"的商家、
+  // 模型与所用 Key（掩码）。
 
   card.append(mkField(
     'DeepSeek API Key（查余额）',
@@ -1794,7 +1919,7 @@ function openSettings() {
     'opencode.ai/zen/go 订阅控制台获取。请求发往 https://opencode.ai/zen/go/v1/usage（Bearer 鉴权；未公开文档，2026-08 实测有效）。显示三个额度窗口的已用百分比与重置倒计时。',
   ))
   const note = el('div', 'dshu-field-hint')
-  note.textContent = '凭证不出本机、不进任何日志；会话级费用仍为本地估算（官方无按会话计费接口），账户级余额/额度为官方准确值。'
+  note.textContent = '凭证不出本机、不进任何日志；会话级费用仍为本地估算（官方无按会话计费接口），账户级余额/额度为官方准确值。本地已存 Key 每 30 秒与宿主凭证自动对齐（宿主凭证 = 本会话模型路由实际使用的 Key）。'
   card.append(note)
   overlay.append(card)
   panel.append(overlay)
@@ -1806,6 +1931,12 @@ const OFFICIAL_CSS = `
   font-size: 11px; padding: 0; text-decoration: underline;
 }
 .dshu-official { border-radius: 8px; padding: 8px 10px; background: var(--dsw-specific-input-major, rgb(24, 24, 26)); }
+.dshu-route {
+  display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px;
+  font-size: 10.5px; line-height: 1.5;
+  color: var(--dsw-alias-label-dimmed, rgb(101, 103, 107));
+}
+.dshu-route-key { font-variant-numeric: tabular-nums; }
 .dshu-opencode-window { margin-bottom: 9px; }
 .dshu-opencode-window:last-child { margin-bottom: 2px; }
 .dshu-opencode-window .dshu-bar { margin: 3px 0 2px; }
@@ -1917,7 +2048,7 @@ function refreshPanel() {
   renderContextSection(body, s)
   renderMetrics(body, s)
   renderAnalysis(body, s)
-  renderOfficialSection(body, lastOfficial, s.model)
+  renderOfficialSection(body, lastOfficial, s.model, s.provider)
   // 工作区文件独立渲染到"文件"视图（与"用量"视图切换显示）
   refreshFilesSection()
   const foot = shadow.querySelector('.dshu-foot-time')
@@ -1966,30 +2097,37 @@ async function refreshDataCore(seq) {
       return
     }
 
-    // 首次/切换会话：全量拉一次，缓存会话首事件时间与主模型（含 localStorage 持久化）
+    // 首次/切换会话：全量拉一次，缓存会话首事件时间、主模型与提供方（含 localStorage 持久化）
     let firstTs = undefined
     let model = undefined
+    let provider = undefined
     const cached = firstTsCache || loadFirstTsCache()
     if (cached && cached.sessionId === sessionId) {
       firstTs = cached.firstTs
       model = cached.model
+      provider = cached.provider
     } else {
       const { events } = await fetchSession(sessionId)
       let fTs
       let m
+      let p
       for (const entry of events) {
         const event = entry && entry.event ? entry.event : entry
         const ts = typeof event.time === 'number' ? event.time : typeof event.ts === 'number' ? event.ts : undefined
         if (ts !== undefined && (fTs === undefined || ts < fTs)) fTs = ts
         if (event.type === 'assistant/message') {
           const source = event.data && event.data.message && event.data.message.source
-          if (source && typeof source.model === 'string') m = source.model
+          if (source) {
+            if (typeof source.model === 'string') m = source.model
+            if (typeof source.provider === 'string') p = source.provider
+          }
         }
       }
-      firstTsCache = { sessionId, firstTs: fTs, model: m }
+      firstTsCache = { sessionId, firstTs: fTs, model: m, provider: p }
       saveFirstTsCache()
       firstTs = fTs
       model = m
+      provider = p
       // 会话首次全量拉取时顺带构建回合用量映射（避免二次全量）
       if (CONFIG.annotateMessages) {
         turnUsage = { sessionId, steps: new Map() }
@@ -2004,6 +2142,11 @@ async function refreshDataCore(seq) {
       const event = entry && entry.event ? entry.event : entry
       const ts = typeof event.time === 'number' ? event.time : typeof event.ts === 'number' ? event.ts : undefined
       if (ts !== undefined && (lastTs === undefined || ts > lastTs)) lastTs = ts
+      // 尾页同步当前提供方：会话中途切模型/换提供方时立即反映真实计费去向
+      if (event.type === 'assistant/message') {
+        const source = event.data && event.data.message && event.data.message.source
+        if (source && typeof source.provider === 'string') provider = source.provider
+      }
     }
 
     // 会话工作目录：会话切换时从 session.list 取一次（文件区块用）
@@ -2026,6 +2169,7 @@ async function refreshDataCore(seq) {
       firstTs,
       lastTs,
       model,
+      provider,
       cwd: filesState.root,
       requests: undefined, // 由 sessionStats.steps 或事件折叠得出
     })
@@ -2047,15 +2191,16 @@ async function refreshDataCore(seq) {
   const hasCredential = !!(getApiKey() || getPlatformToken() || getOpencodeKey())
   if (hasCredential && now - lastOfficialAt >= CONFIG.officialRefreshMs) {
     lastOfficialAt = now
-    lastOfficial = await refreshOfficial(lastStats && lastStats.model)
+    lastOfficial = await refreshOfficial(lastStats && lastStats.model, lastStats && lastStats.provider)
     log('official', lastOfficial)
     if (seq === refreshSeq) refreshPanel()
   }
 
-  // 无 API Key 时自动探测本地凭证服务（setup-key 工具），导入后立即刷新官方数据
-  if (!hasCredential && (await autoImportApiKey())) {
-    lastOfficial = await refreshOfficial(lastStats && lastStats.model)
-    log('official after auto-import', lastOfficial)
+  // 凭证同步（含过期旧 Key 校正）：每次刷新探测，通道内部 30s 节流；
+  // 宿主凭证 = 会话实际路由使用的 Key，本地旧 Key 会被自动覆盖
+  if (await autoImportApiKey()) {
+    lastOfficial = await refreshOfficial(lastStats && lastStats.model, lastStats && lastStats.provider)
+    log('official after credential sync', lastOfficial)
     if (seq === refreshSeq) refreshPanel()
   }
 }
@@ -2414,7 +2559,7 @@ const api = {
   fetchOpencodeUsage: fetchOpencodeGoUsage,
   resolveProvider,
   autoImportApiKey,
-  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, aggregateOfficialUsage, parseOpencodeUsage, normalizeOpencodeWindow, isOpencodeKey, fmtCountdown, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals,
+  _internal: { resolveSessionId, fetchSession, fetchSessionTail, fetchSubagentUsage, fmtCompact, fmtInt, fmtMoney, fmtDuration, fmtCountdown, fmtDateTime, aggregateOfficialUsage, parseOpencodeUsage, normalizeOpencodeWindow, isOpencodeKey, checkSessionSwitch, setLoading, mergeTurnSteps, turnTotals,
     // 测试探针（Node 无 DOM 环境验证加载状态机）：
     setLoadingTracer: (fn) => { loadingTracer = typeof fn === 'function' ? fn : null },
     setSessionSwitching: (v) => { sessionSwitching = !!v },

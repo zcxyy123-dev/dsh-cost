@@ -9,6 +9,7 @@
  *   official  { apiKey?, userToken? } → { balance?, usage? } DeepSeek 官方余额 / 平台费用（curl）
  *   opencode  { opencodeKey? } → { provider, windows } | { error }  OpenCode Go 三窗口额度（curl）
  *   apikey    {} → { apiKey?, opencodeGoApiKey?, source? }  宿主凭证（DeepSeek + OpenCode Go）
+ *   route     {} → { provider?, model? }  默认模型路由（agent-default-model，空白/新会话计费去向）
  *
  * 全部数据来自 DSH 宿主自身的服务（sessionQuery / subagents / sessionProjectionCache
  * / fs / shell / credentials），无页面抓取；失败一律优雅降级为 null / 空数组 / { error }。
@@ -322,9 +323,31 @@ return {
       // 余额：api.deepseek.com/user/balance（公开接口 + API Key 鉴权）
       if (apiKey) {
         try {
-          const body = await runCurl('https://api.deepseek.com/user/balance', apiKey)
+          const mark = '__DSU_STATUS__'
+          const curlCmd = (exe) => `${exe} -sS --max-time 15 -w "\\n${mark}%{http_code}" -H "Accept: application/json" -H "Authorization: Bearer ${apiKey}" "https://api.deepseek.com/user/balance"`
+          const runCurlStatus = async () => {
+            const spec = shell.resolve({ command: curlCmd('curl.exe'), timeoutMs: 20000, stdoutMaxBytes: 2 * 1024 * 1024 })
+            const result = await shell.run(spec)
+            let t = ''
+            if (result && result.stdout) t = typeof result.stdout === 'string' ? result.stdout : (result.stdout.text || '')
+            if (!t) {
+              // curl.exe 不存在等场景回退 curl（非 Windows）
+              const spec2 = shell.resolve({ command: curlCmd('curl'), timeoutMs: 20000, stdoutMaxBytes: 2 * 1024 * 1024 })
+              const result2 = await shell.run(spec2)
+              if (result2 && result2.stdout) t = typeof result2.stdout === 'string' ? result2.stdout : (result2.stdout.text || '')
+            }
+            if (!t) return { status: 0, body: '' }
+            const idx = t.lastIndexOf(mark)
+            return {
+              status: idx >= 0 ? parseInt(t.slice(idx + mark.length).trim(), 10) : 0,
+              body: idx >= 0 ? t.slice(0, idx) : t,
+            }
+          }
+          const { status, body } = await runCurlStatus()
           const json = parseJsonSafe(body)
-          if (!json || !Array.isArray(json.balance_infos)) {
+          if (status === 401) {
+            out.balance = { error: 'API Key 无效或已失效（401）' }
+          } else if (!json || !Array.isArray(json.balance_infos)) {
             out.balance = { error: '接口返回异常（API Key 无效？）' }
           } else {
             const infos = json.balance_infos.filter((i) => i && i.total_balance !== undefined)
@@ -397,6 +420,20 @@ return {
       return out
     })
 
+    /** 当前默认模型路由（agent-default-model 设置）：空白/新会话的计费去向。 */
+    harness.handle('route', async () => {
+      const out = { provider: null, model: null }
+      try {
+        const adm = ctx.get('agentDefaultModel')
+        if (adm && typeof adm.currentSelection === 'function') {
+          const sel = adm.currentSelection()
+          if (sel && typeof sel.provider === 'string') out.provider = sel.provider
+          if (sel && typeof sel.model === 'string') out.model = sel.model
+        }
+      } catch { /* 服务不可用时静默降级 */ }
+      return out
+    })
+
     /** OpenCode Go 官方额度（curl 直连 opencode.ai，宿主侧无 CORS 问题）。 */
     harness.handle('opencode', async (args) => {
       const shell = ctx.get('shell')
@@ -459,7 +496,9 @@ return {
         const lim = Number(obj.limit ?? obj.limit_amount)
         percent = Number.isFinite(used) && Number.isFinite(lim) && lim > 0 ? (used / lim) * 100 : 0
       }
-      if (Math.abs(percent) <= 1) percent *= 100
+      // 官方实测返回整数 0–100（percent: 2/0/1，1 即 1%）。旧启发式把 ≤1 一律 ×100，
+      // 导致整数 1% 被误显示为 100% 已用。只放大严格位于 (0,1) 的纯小数比例。
+      if (percent > 0 && percent < 1) percent *= 100
       percent = Math.max(0, Math.min(100, percent || 0))
       let resetAt = null
       const rawReset = obj.resetsAt ?? obj.reset_at ?? obj.resetAt ?? obj.reset

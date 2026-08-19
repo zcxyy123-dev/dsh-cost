@@ -1,10 +1,10 @@
 # DSH bundle 插件层：插入用量显示的宿主半插件。
 #
 # 契约（勿改）：
-#   - name 必须等于 package.json 的 name（dsh-cost-usage-display）。Loader 按
+#   - name 必须等于 package.json 的 name（dsh-cost）。Loader 按
 #     条目名解析模块（宿主半 lib/host.js）；client-modules 也按条目名解析
 #     package.json，从而发现 dsh.client 声明并挂载浏览器端 bundle。
 #   - id 是本层内唯一的条目标识；与任何内置插件 id 冲突会导致加载失败。
 - insert:
-    - id: dsh-cost-usage-display
-      name: dsh-cost-usage-display
+    - id: dsh-cost
+      name: dsh-cost

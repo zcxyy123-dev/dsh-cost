@@ -72,6 +72,14 @@ dsh plugin --profile web add github:zcxyy123-dev/dsh-cost
   三窗口额度**：滚动5h / 周 / 月 的已用百分比、剩余与重置倒计时
   （`GET https://opencode.ai/zen/go/v1/usage`，Bearer Key；Key 自动取自宿主凭证
   `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` 或 ⚙ 手动粘贴 `sk-opencode-…`）。
+- **计费去向自动识别**：官方账户区块顶部显示"本会话计费"的商家、模型与所用 Key
+  （掩码，如 `OPENCODE_GO_API_KEY ···Wles`）。判据以会话事件 `source.provider`
+  （tokens 实际计费的提供方）为权威，其次按模型/Key 形态兜底；空白会话回退宿主
+  默认模型路由（`agent-default-model`）。面板展示的每个余额/额度数字旁都标注了
+  所用 Key 的掩码，一眼可辨"这是哪一个 Key 的哪一个商家"。
+- **凭证与宿主自动对齐**：本地 `localStorage` 里的 Key 每 30 秒与宿主凭证比对，
+  换 Key / 旧 Key 失效时自动以宿主为准覆盖（宿主凭证 = 本会话模型路由实际使用的
+  Key），余额/额度始终查询"本会话真正计费的账户"。
 
 ## 其他安装形态
 
@@ -112,8 +120,8 @@ node test-annotate.js
 node test-official.js
 ```
 
-`check-integrity.js` 是历史脚本，当前会对已有的动态模式产生误报；它不能替代
-`dsh-plugin/verify-plugin.js`。
+`check-integrity.js` 是函数引用完整性检查（已修复误报，`node check-integrity.js` 应输出
+`PASS 无缺失函数引用`）；动态插件的权威校验是 `dsh-plugin/verify-plugin.js`。
 
 ## 数据与凭证
 

@@ -125,6 +125,13 @@ eq('滚动 limit', w1.limit, 12)
 eq('滚动 resetAt 解析为时间戳', typeof w1.resetAt, 'number')
 eq('滚动 status', w1.status, 'ok')
 
+// 回归（v2.0.1）：官方返回整数 1（=1% 已用），旧启发式误 ×100 显示为 100% 已用
+// （用户实测：5h/月额度显示"归零"的真凶）。整数 1 必须保持 1%。
+const w1b = norm('rolling', '滚动 5h', { status: 'ok', percent: 1, resetsAt: '2026-08-17T09:50:56.101Z' }, 12)
+eq('整数 percent=1 → 1%（非 100%）', w1b.percent, 1)
+eq('整数 percent=1 remaining', w1b.remaining, 99)
+eq('整数 percent=1 进度条比例', w1b.percent / 100, 0.01)
+
 // 小数 percent（0–1）归一化
 const w2 = norm('weekly', '周额度', { percent: 0.42, reset_at: 1760000000 }, 30)
 eq('周 percent 小数×100', w2.percent, 42)
@@ -170,6 +177,12 @@ const cd = api._internal.fmtCountdown(Date.now() + 1000 * 60 * 60 * 3 + 1000 * 6
 eq('倒计时 3小时20分', cd, '3小时20分')
 eq('无重置时间 → 空串', api._internal.fmtCountdown(null), '')
 
+// 重置实际日期时间（本地时区 YYYY-MM-DD HH:mm）
+const dt = api._internal.fmtDateTime(new Date(2026, 7, 16, 21, 5).getTime())
+eq('日期时间格式', dt, '2026-08-16 21:05')
+eq('无时间 → 空串', api._internal.fmtDateTime(null), '')
+eq('非法时间 → 空串', api._internal.fmtDateTime('x'), '')
+
 // 提供方自动识别（纯自动，无配置 UI）
 eq('无凭证默认 deepseek', api.resolveProvider(), 'deepseek')
 storage.set('dshu.opencodeKey', 'sk-opencode-x')
@@ -182,6 +195,13 @@ eq('独有模型 minimax-m3 → opencode-go', api.resolveProvider('minimax-m3'),
 eq('独有模型 qwen3.7-plus → opencode-go', api.resolveProvider('qwen3.7-plus'), 'opencode-go')
 eq('deepseek-v4-flash 且无 opencode key → deepseek', api.resolveProvider('deepseek-v4-flash'), 'deepseek')
 eq('无模型参数 → deepseek', api.resolveProvider(undefined), 'deepseek')
+
+// v2.0.1：会话事件 source.provider 是权威判据（tokens 实际计费的提供方）
+eq('会话 provider opencode-go → opencode-go', api.resolveProvider('deepseek-v4-flash', 'opencode-go'), 'opencode-go')
+eq('会话 provider deepseek-official → deepseek', api.resolveProvider('deepseek-v4-flash', 'deepseek-official'), 'deepseek')
+eq('会话 provider deepseek → deepseek', api.resolveProvider('deepseek-v4-flash', 'deepseek'), 'deepseek')
+eq('会话 provider openai → other', api.resolveProvider('deepseek-v4-flash', 'openai'), 'other')
+eq('未知 provider 空模型 → other', api.resolveProvider(undefined, 'minimax'), 'other')
 
 // ---- fetchOpencodeGoUsage：401 路径 + 成功路径（mock fetch；非动态宿主走官方桥） ----
 async function runFetchTests() {

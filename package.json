@@ -1,5 +1,5 @@
 {
-  "name": "dsh-cost-usage-display",
+  "name": "dsh-cost",
   "version": "2.0.0",
   "description": "DSH 用量显示（Usage Display）— DeepSeek Harness 官方 bundle 插件包格式。在 DSH Web GUI 右侧新增第四列（用量 / 文件），含会话用量、费用估算、文件树与官方余额。安装：dsh plugin --profile web add github:zcxyy123-dev/dsh-cost",
   "license": "MIT",
